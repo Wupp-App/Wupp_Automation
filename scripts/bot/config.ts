@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 
@@ -23,4 +23,5 @@ export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
-export const ai = new GoogleGenAI({ apiKey: geminiApiKey });
+// Gemini SDK Başlatma
+export const genAI = new GoogleGenerativeAI(geminiApiKey);
