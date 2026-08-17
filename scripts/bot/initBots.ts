@@ -36,18 +36,36 @@ async function initBots() {
 
     if (!userId) continue;
 
-    // 2. Profiles tablosuna avatar_url ile birlikte ekle/güncelle (Upsert)
-    const { error: profileError } = await supabaseAdmin
+    // 2. Profiles tablosunda kayıt var mı kontrol et
+    const { data: existingProfile } = await supabaseAdmin
       .from('profiles')
-      .upsert(
-        {
-          id: userId,
+      .select('id')
+      .eq('id', userId)
+      .maybeSingle();
+
+    let profileError;
+
+    if (existingProfile) {
+      // Kayıt varsa (veya Supabase trigger'ı oluşturduysa) doğrudan güncelle
+      const { error } = await supabaseAdmin
+        .from('profiles')
+        .update({
           username: bot.username,
           bio: bot.bio,
           avatar_url: bot.avatar_url,
-        },
-        { onConflict: 'id' }
-      );
+        })
+        .eq('id', userId);
+      profileError = error;
+    } else {
+      // Kayıt hiç yoksa ekle
+      const { error } = await supabaseAdmin.from('profiles').insert({
+        id: userId,
+        username: bot.username,
+        bio: bot.bio,
+        avatar_url: bot.avatar_url,
+      });
+      profileError = error;
+    }
 
     if (profileError) {
       console.error(`✕ @${bot.username} profiles tablosuna eklenemedi:`, profileError.message);
