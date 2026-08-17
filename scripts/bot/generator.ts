@@ -24,7 +24,7 @@ Kurallar:
 
   try {
     // En kararlı ve güncel model: gemini-2.0-flash
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
     const result = await model.generateContent(prompt);
     const response = await result.response;
     const text = response.text()?.trim();
