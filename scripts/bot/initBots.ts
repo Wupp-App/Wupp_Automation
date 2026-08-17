@@ -2,49 +2,57 @@ import { supabaseAdmin } from './config';
 import { BOT_PERSONAS } from './personas';
 
 async function initBots() {
-  console.log('🤖 Bot hesapları kontrol ediliyor...');
+  console.log(`🤖 Toplam ${BOT_PERSONAS.length} bot hesabı senkronize ediliyor...`);
 
   for (const bot of BOT_PERSONAS) {
-    // 1. Profil tablosunda var mı?
-    const { data: existingProfile } = await supabaseAdmin
-      .from('profiles')
-      .select('id')
-      .eq('username', bot.username)
-      .maybeSingle();
+    let userId: string | null = null;
 
-    if (existingProfile) {
-      console.log(`✓ @${bot.username} zaten kayıtlı.`);
-      continue;
-    }
+    // 1. Auth tarafında bu email var mı kontrol et
+    const { data: userList } = await supabaseAdmin.auth.admin.listUsers();
+    const existingAuth = userList?.users.find((u) => u.email === bot.email);
 
-    // 2. Auth kullanıcısı oluştur
-    const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
-      email: bot.email,
-      password: 'BotPasswordSecure123!',
-      email_confirm: true,
-      user_metadata: { username: bot.username },
-    });
-
-    if (authError || !authUser.user) {
-      console.error(`✕ ${bot.username} auth oluşturulamadı:`, authError?.message);
-      continue;
-    }
-
-    // 3. Profiles tablosuna ekle/güncelle
-    const { error: profError } = await supabaseAdmin.from('profiles').upsert({
-      id: authUser.user.id,
-      username: bot.username,
-      bio: bot.bio,
-    });
-
-    if (profError) {
-      console.error(`✕ ${bot.username} profili güncellenemedi:`, profError.message);
+    if (existingAuth) {
+      userId = existingAuth.id;
+      console.log(`ℹ️ Auth hesabı zaten var: @${bot.username} (${bot.email})`);
     } else {
-      console.log(`✅ @${bot.username} (${bot.email}) başarıyla oluşturuldu.`);
+      // Yoksa Auth kullanıcısını oluştur
+      const { data: newUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
+        email: bot.email,
+        password: 'BotPasswordSecure123!',
+        email_confirm: true,
+        user_metadata: { username: bot.username },
+      });
+
+      if (authError || !newUser.user) {
+        console.error(`✕ @${bot.username} auth oluşturulamadı:`, authError?.message);
+        continue;
+      }
+      userId = newUser.user.id;
+      console.log(`✅ Auth hesabı açıldı: @${bot.username}`);
+    }
+
+    if (!userId) continue;
+
+    // 2. Profiles tablosuna zorla ekle/güncelle (Upsert)
+    const { error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .upsert(
+        {
+          id: userId,
+          username: bot.username,
+          bio: bot.bio,
+        },
+        { onConflict: 'id' }
+      );
+
+    if (profileError) {
+      console.error(`✕ @${bot.username} profiles tablosuna eklenemedi:`, profileError.message);
+    } else {
+      console.log(`🎉 @${bot.username} profili başarıyla güncellendi/eklendi.`);
     }
   }
 
-  console.log('🎉 Tüm bot hesapları hazırlandı.');
+  console.log('✨ Bot senkronizasyonu tamamlandı.');
 }
 
 initBots();
