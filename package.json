@@ -11,7 +11,7 @@
     "bot:run": "tsx scripts/bot/runner.ts"
   },
   "dependencies": {
-    "@google/genai": "^0.1.1",
+    "@google/generative-ai": "^0.21.0",
     "@supabase/supabase-js": "^2.48.1",
     "dotenv": "^16.4.7",
     "next": "14.2.15",
