@@ -2,18 +2,21 @@ import { supabaseAdmin } from './config';
 import { BOT_PERSONAS } from './personas';
 
 async function initBots() {
-  console.log(`🤖 Toplam ${BOT_PERSONAS.length} bot hesabı senkronize ediliyor...`);
+  console.log(`🤖 Toplam ${BOT_PERSONAS.length} bot hesabı ve profil fotoğrafları senkronize ediliyor...`);
+
+  // Auth kullanıcı listesini tek seferde çekiyoruz (hız için)
+  const { data: userListData } = await supabaseAdmin.auth.admin.listUsers();
+  const allUsers = userListData?.users || [];
 
   for (const bot of BOT_PERSONAS) {
     let userId: string | null = null;
 
     // 1. Auth tarafında bu email var mı kontrol et
-    const { data: userList } = await supabaseAdmin.auth.admin.listUsers();
-    const existingAuth = userList?.users.find((u) => u.email === bot.email);
+    const existingAuth = allUsers.find((u) => u.email === bot.email);
 
     if (existingAuth) {
       userId = existingAuth.id;
-      console.log(`ℹ️ Auth hesabı zaten var: @${bot.username} (${bot.email})`);
+      console.log(`ℹ️ Auth hesabı mevcut: @${bot.username}`);
     } else {
       // Yoksa Auth kullanıcısını oluştur
       const { data: newUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
@@ -28,12 +31,12 @@ async function initBots() {
         continue;
       }
       userId = newUser.user.id;
-      console.log(`✅ Auth hesabı açıldı: @${bot.username}`);
+      console.log(`✅ Yeni auth hesabı açıldı: @${bot.username}`);
     }
 
     if (!userId) continue;
 
-    // 2. Profiles tablosuna zorla ekle/güncelle (Upsert)
+    // 2. Profiles tablosuna avatar_url ile birlikte ekle/güncelle (Upsert)
     const { error: profileError } = await supabaseAdmin
       .from('profiles')
       .upsert(
@@ -41,6 +44,7 @@ async function initBots() {
           id: userId,
           username: bot.username,
           bio: bot.bio,
+          avatar_url: bot.avatar_url,
         },
         { onConflict: 'id' }
       );
@@ -48,11 +52,11 @@ async function initBots() {
     if (profileError) {
       console.error(`✕ @${bot.username} profiles tablosuna eklenemedi:`, profileError.message);
     } else {
-      console.log(`🎉 @${bot.username} profili başarıyla güncellendi/eklendi.`);
+      console.log(`🎉 @${bot.username} profili ve fotoğrafı başarıyla güncellendi.`);
     }
   }
 
-  console.log('✨ Bot senkronizasyonu tamamlandı.');
+  console.log('✨ Tüm bot hesapları ve fotoğrafları senkronize edildi.');
 }
 
 initBots();
