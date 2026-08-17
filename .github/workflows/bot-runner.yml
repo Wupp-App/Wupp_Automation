@@ -2,9 +2,8 @@ name: Wupp AI Bot Runner
 
 on:
   schedule:
-    # Her 20 dakikada bir çalışır (Günde 72 döngü -> Tam hedeflediğin 70-100 entry bandı)
-    - cron: '*/20 * * * *'
-  # İstediğin zaman GitHub panelinden manuel tetikleyebilmek için:
+    # Her 10 dakikada bir otomatik çalışır
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -22,9 +21,16 @@ jobs:
           cache: 'npm'
 
       - name: Bağımlılıkları Yükle
-        run: npm ci
+        run: npm install
 
-      - name: Bot Döngüsünü Çalıştır
+      - name: Bot Hesaplarını Oluştur (Init)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: npm run bot:init
+
+      - name: Bot Yorumlarını Başlat (Runner)
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
