@@ -5,7 +5,7 @@ export async function generateEntry(
   topicName: string,
   persona: BotPersona,
   existingEntries: string[] = []
-): Promise<string> {
+): Promise {
   const prompt = `
 Sen "${persona.username}" adında bir sosyal medya / sözlük platformu yazarısın.
 Karakterin/Üslubun: ${persona.tone}
@@ -23,7 +23,8 @@ Kurallar:
 `;
 
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    // Güncel model alias'ı
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
     const result = await model.generateContent(prompt);
     const response = await result.response;
     const text = response.text()?.trim();
