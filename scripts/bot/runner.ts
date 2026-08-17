@@ -5,6 +5,48 @@ import { generateEntry } from './generator';
 // Gemini RPM (Dakikalık istek) sınırına takılmamak için bekleme fonksiyonu
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
+// Rastgele 10-49 arası bot beğenisi ekleyen fonksiyon
+async function addRandomBotLikes(
+  entryId: number | string,
+  authorBotId: string,
+  allBotProfiles: { id: string; username: string }[]
+): Promise<number> {
+  // 1. Entry'yi yazan bot dışındaki diğer botları al
+  const eligibleBots = allBotProfiles.filter((b) => b.id !== authorBotId);
+  if (eligibleBots.length === 0) return 0;
+
+  // 2. 10 ile bot havuzunun maksimum boyutu (en fazla 49) arasında rastgele sayı belirle
+  const minLikes = Math.min(10, eligibleBots.length);
+  const maxLikes = eligibleBots.length;
+  const likeCount = Math.floor(Math.random() * (maxLikes - minLikes + 1)) + minLikes;
+
+  // 3. Botları rastgele karıştır ve belirlenen sayıda bot seç
+  const shuffled = [...eligibleBots].sort(() => 0.5 - Math.random());
+  const selectedBots = shuffled.slice(0, likeCount);
+
+  // 4. entry_likes tablosuna satırları ekle
+  const likeRows = selectedBots.map((bot) => ({
+    entry_id: entryId,
+    user_id: bot.id,
+  }));
+
+  const { error: likesErr } = await supabaseAdmin
+    .from('entry_likes')
+    .insert(likeRows);
+
+  if (likesErr) {
+    console.log(`ℹ️ entry_likes tablosu atlandı veya kısıt oluştu: ${likesErr.message}`);
+  }
+
+  // 5. entries tablosundaki likes sayacını güncelle
+  await supabaseAdmin
+    .from('entries')
+    .update({ likes: selectedBots.length })
+    .eq('id', entryId);
+
+  return selectedBots.length;
+}
+
 async function runBotCycle() {
   console.log('🚀 Bugünün başlıkları taranıyor...');
 
@@ -79,7 +121,7 @@ async function runBotCycle() {
 
       console.log(`✍️ @${persona.username} yorum üretiyor...`);
 
-      // Önceki entry'leri bağlam olarak AI'ya ver (Konudan sapmasın)
+      // Önceki entry'leri bağlam olarak AI'ya ver
       const contextTexts = recentEntryTexts.slice(-4);
       const generatedText = await generateEntry(topic.topic_name, persona, contextTexts);
 
@@ -88,7 +130,7 @@ async function runBotCycle() {
         continue;
       }
 
-      // Entry'yi kaydet
+      // Entry'yi ilk başta 0 beğeni ile kaydet
       const { data: newEntry, error: insertErr } = await supabaseAdmin
         .from('entries')
         .insert([
@@ -96,21 +138,25 @@ async function runBotCycle() {
             topic_id: topic.topic_id,
             user_id: botUserId,
             entry: generatedText,
-            likes: Math.floor(Math.random() * 2), // 0 veya 1 beğeni
+            likes: 0,
             reply_count: 0,
           },
         ])
         .select('id')
         .single();
 
-      if (insertErr) {
-        console.error(`✕ Entry eklenemedi (@${persona.username}):`, insertErr.message);
+      if (insertErr || !newEntry) {
+        console.error(`✕ Entry eklenemedi (@${persona.username}):`, insertErr?.message);
       } else {
         console.log(`✅ [Entry #${newEntry.id}] @${persona.username}: "${generatedText}"`);
         recentEntryTexts.push(generatedText);
+
+        // 💥 Rastgele 10-49 arası bot beğenisi ekle
+        const totalLikes = await addRandomBotLikes(newEntry.id, botUserId, botProfiles);
+        console.log(`❤️ Entry #${newEntry.id} için ${totalLikes} bot beğenisi başarıyla eklendi.`);
       }
 
-      // Gemini RPM sınırına takılmamak ve gerçekçi aralık sağlamak için 4 saniye bekle
+      // İstek limiti ve doğallık için 4 saniye bekle
       await sleep(4000);
     }
   }
