@@ -1,4 +1,4 @@
-import { ai } from './config';
+import { genAI } from './config';
 import { BotPersona } from './personas';
 
 export async function generateEntry(
@@ -23,12 +23,10 @@ Kurallar:
 `;
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-    });
-
-    const text = response.text?.trim();
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text()?.trim();
     return text || '';
   } catch (error) {
     console.error(`[AI Hatası] @${persona.username} için üretilemedi:`, error);
