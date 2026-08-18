@@ -2,8 +2,8 @@ name: Wupp AI Bot Runner
 
 on:
   schedule:
-    # Her 10 dakikada bir otomatik çalışır
-    - cron: '*/10 * * * *'
+    # Her saat başı 1 kez çalışır
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 jobs:
