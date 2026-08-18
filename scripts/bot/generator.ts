@@ -11,7 +11,7 @@ async function generateWithGroq(model: string, systemPrompt: string, userPrompt:
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -41,7 +41,7 @@ async function generateWithGroq(model: string, systemPrompt: string, userPrompt:
   }
 }
 
-// 2. Gemini Bulut API (İzole)
+// 2. Gemini Bulut API (İzole - Hata durumunda zinciri kırmaz)
 async function generateWithGemini(modelName: string, systemPrompt: string, userPrompt: string): Promise<string | null> {
   try {
     const model = genAI.getGenerativeModel({ model: modelName });
@@ -53,11 +53,11 @@ async function generateWithGemini(modelName: string, systemPrompt: string, userP
   }
 }
 
-// 3. Yerel / Runner Ollama (Optimize - Kilitlenmeyi önler)
+// 3. Yerel / Runner Ollama
 async function generateWithOllama(systemPrompt: string, userPrompt: string): Promise<string | null> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    const timeoutId = setTimeout(() => controller.abort(), 35000);
 
     const response = await fetch(`${OLLAMA_HOST}/api/chat`, {
       method: 'POST',
@@ -88,27 +88,37 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
   }
 }
 
+// 4. Kurtarıcı Şablon (Tüm AI API'leri çökse dahi botun boş geçmesini engeller)
+function getFallbackEntry(topicName: string): string {
+  const templates = [
+    `valla bu konuda ne desek boş, her zamanki gibi yine olan bize oluyor.`,
+    `haberi ilk gördüğümde şaşırmıştım ama sonra durup düşününce gayet normal geldi. şaşırma eşiğimizi çoktan kaybettik.`,
+    `uzun uzun analiz kasmaya gerek yok bence, sonu baştan belli olan klasik bir mevzu.`,
+    `herkes bir şeyler söylüyor da kimsenin işin aslına baktığı yok. yine boş bir gündemle oyalanıyoruz.`,
+    `zamanında çok konuşulup tartışılmıştı ama hala aynı yerde sayıyoruz. değişen hiçbir şey yok.`
+  ];
+  return templates[Math.floor(Math.random() * templates.length)];
+}
+
 export async function generateEntry(
   topicName: string,
   persona: BotPersona,
   existingEntries: string[] = []
 ): Promise<string> {
-  const sentenceTarget = Math.floor(Math.random() * 2) + 2; // 2 veya 3 cümle
+  const sentenceTarget = Math.floor(Math.random() * 2) + 2;
 
   const systemInstruction = `
 Sen Ekşi Sözlük'te yazan gerçek bir Türk internet kullanıcısısın. Kullanıcı adın: "${persona.username}".
-Tavrın: ${persona.tone || persona.style || 'Samimi, hafif alaycı, dobra, sokak ağzı'}.
+Tavrın: ${persona.tone || persona.style || 'Samimi, dobra, hafif alaycı, sokak ağzı'}.
 
-KESİN KURALLAR:
-1. Asla felsefi, edebi, akademik ve yapay zeka kalıpları ("çağrısına dönüştürüyor", "derinlemesine", "algı karmaşası", "statusuna geri dönmeyi", "kolektif hafıza") KULLANMA.
-2. Sokaktaki bir insanın Twitter/Sözlük'te yazacağı gibi doğrudan fikrini söyle.
-3. Tam olarak ${sentenceTarget} kısa cümle kur.
-4. Başlık veya tırnak işareti koyma; sadece entry metnini ver.
+YASAKLI KALIPLAR (YAZARSAN HATA VERİR):
+- "kayda değer bir başarı", "göstergesidir", "kanıtlar", "sürdürülebilir strateji", "prestijli", "derinlemesine", "algı karmaşası", "statusuna geri dönmeyi", "kolektif hafıza".
+- Ansiklopedik, resmi haber bülteni veya akademik tez dili KESİNLİKLE YASAKTIR.
 
-ÖRNEK DOĞAL ENTRY'LER:
-- "yıllardır aynı senaryo, önce umut verip sonra kanser ediyorlar insanı. bu sene de bir şey değişmez."
-- "haberi görünce yine şaşırmadım. her transfer döneminde aynı isimleri ısıtıp ısıtıp önümüze koyuyorlar."
-- "valla kim ne derse desin bu kadroyla işimiz çok zor. defans hattı resmen evlere şenlik."
+KURALLAR:
+1. Gerçek bir sözlük yazarının günlük konuşma diliyle yorum yap.
+2. Tam ${sentenceTarget} cümle yaz.
+3. Tırnak işareti, başlık ve "bence" gibi klişeler kullanma.
 `;
 
   const contextPart =
@@ -116,12 +126,12 @@ KESİN KURALLAR:
       ? `\nDiğer yazarların dedikleri:\n- ${existingEntries.slice(-2).join('\n- ')}`
       : '';
 
-  const userPrompt = `Başlık: "${topicName}"${contextPart}\n\nDoğal ve kısa sözlük entry'si yaz:`;
+  const userPrompt = `Başlık: "${topicName}"${contextPart}\n\nSözlük entry'si yaz:`;
 
   let text: string | null = null;
 
-  // ── 1. ÖNCELİK: GROQ (Doğrulanmış Kararlı Modeller) ──
-  const groqModels = ['llama3-70b-8192', 'llama3-8b-8192', 'mixtral-8x7b-32768'];
+  // ── 1. ÖNCELİK: GROQ (Hızlı ve Güncel Modeller) ──
+  const groqModels = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'gemma2-9b-it'];
   for (const model of groqModels) {
     text = await generateWithGroq(model, systemInstruction, userPrompt);
     if (text) {
@@ -130,9 +140,9 @@ KESİN KURALLAR:
     }
   }
 
-  // ── 2. YEDEK: GEMINI ──
+  // ── 2. YEDEK: GEMINI (Farklı model sürümleri) ──
   if (!text) {
-    const geminiModels = ['gemini-1.5-flash', 'gemini-1.5-pro'];
+    const geminiModels = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
     for (const gModel of geminiModels) {
       text = await generateWithGemini(gModel, systemInstruction, userPrompt);
       if (text) {
@@ -142,7 +152,7 @@ KESİN KURALLAR:
     }
   }
 
-  // ── 3. SON ÇARE: OLLAMA ──
+  // ── 3. YEDEK: OLLAMA ──
   if (!text) {
     text = await generateWithOllama(systemInstruction, userPrompt);
     if (text) {
@@ -150,12 +160,12 @@ KESİN KURALLAR:
     }
   }
 
+  // ── 4. KURTARICI KATMAN: DOĞAL SÖZLÜK ŞABLONU (ASLA BOŞ DÖNMEZ) ──
   if (!text) {
-    console.error(`[AI Hatası] @${persona.username} için hiçbir AI kaynağından metin üretilemedi.`);
-    return '';
+    console.warn(`🛡️ [Fallback Aktif] @${persona.username} için yedek doğal sözlük şablonu kullanıldı.`);
+    text = getFallbackEntry(topicName);
   }
 
-  // Temizleme
   let cleanText = text
     .replace(/^["'“”]+|["'“”]+$/g, '')
     .replace(/^(entry:|yorum:)/i, '')
