@@ -1,26 +1,56 @@
 import { genAI } from './config';
 import { BotPersona } from './personas';
+import { Groq } from 'groq-sdk';
 
-const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+const OLLAMA_HOST = 'http://127.0.0.1:11434';
+const LOCAL_MODEL = 'qwen3:latest';
 
-// Sırayla denenecek güncel ve yedek modeller
-const FALLBACK_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-1.5-flash',
-  'gemini-1.5-pro',
-  'gemini-2.5-pro',
-];
+const groqApiKey = process.env.GROQ_API_KEY || '';
+const groqClient = groqApiKey ? new Groq({ apiKey: groqApiKey }) : null;
+
+// 1. Yerel Ollama Çağrısı (Limitsiz & Ücretsiz)
+async function generateWithOllama(systemPrompt: string, userPrompt: string): Promise<string | null> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 sn timeout
+
+    const response = await fetch(`${OLLAMA_HOST}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: LOCAL_MODEL,
+        stream: false,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        options: {
+          temperature: 0.75,
+        },
+      }),
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const content = data?.message?.content?.trim();
+    return content || null;
+  } catch {
+    return null;
+  }
+}
 
 export async function generateEntry(
   topicName: string,
   persona: BotPersona,
-  existingEntries: string[] = [],
-  retryCount = 0
+  existingEntries: string[] = []
 ): Promise<string> {
-  // Rastgele 2 ile 5 arasında cümle hedefi belirle
+  // Rastgele 2 ile 5 cümle arası hedef
   const sentenceTarget = Math.floor(Math.random() * (5 - 2 + 1)) + 2;
 
-  // Çeşitlilik için rastgele ton varyasyonları
   const variations = [
     'kendi tecrübene dayanarak veya doğrudan bir örnek vererek anlat',
     'durumu esprili veya hafif iğneleyici bir dille analiz et',
@@ -29,47 +59,63 @@ export async function generateEntry(
   ];
   const randomVariation = variations[Math.floor(Math.random() * variations.length)];
 
-  const prompt = `
+  const systemInstruction = `
 Sen "${persona.username}" kullanıcı adına sahip, Ekşi Sözlük / sosyal medya platformunda yazan gerçek bir insansın.
-Kişiliğin ve üslubun: ${persona.tone}
-
-Hakkında yorum yapacağın başlık: "${topicName}"
-${existingEntries.length > 0 ? `Başlıktaki diğer bazı yazarların görüşleri:\n- ${existingEntries.slice(0, 3).join('\n- ')}` : ''}
+Kişiliğin ve üslubun: ${persona.tone || persona.style || 'Samimi, gündelik ve doğal Türkçe'}
 
 Yazım Kuralları:
 1. Türkçe yaz. Kesinlikle robotik veya ansiklopedik yazma.
 2. Gerçek bir sözlük yazarının gündelik tarzını benimse; ${randomVariation}.
-3. Asla "Merhaba", "Özetle", "Bence bu konu hakkında...", "Sonuç olarak" gibi yapay zeka kalıpları KULLANMA.
-4. Uzunluk: Tam olarak ${sentenceTarget} cümle kur. Çok kısa tek kelimelik veya gereksiz devasa paragraflar olmasın, doğal bir forum girdisi akışında olsun.
+3. Asla "Merhaba", "Özetle", "Bence bu konu hakkında...", "Sonuç olarak" gibi kalıplar KULLANMA.
+4. Uzunluk: Tam olarak ${sentenceTarget} cümle kur.
 5. Başlık veya tırnak işareti koyma; sadece yazacağın entry metnini döndür.
 `;
 
-  let lastError: any = null;
+  const contextPart =
+    existingEntries.length > 0
+      ? `\nBaşlıktaki diğer bazı yazarların görüşleri:\n- ${existingEntries.slice(-3).join('\n- ')}`
+      : '';
 
-  for (const modelName of FALLBACK_MODELS) {
-    try {
-      const model = genAI.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      const text = response.text()?.trim() || '';
+  const userPrompt = `Hakkında yorum yapacağın başlık: "${topicName}"${contextPart}\n\nEntry:`;
 
-      if (text) {
-        return text.replace(/^["']|["']$/g, '');
-      }
-    } catch (error: any) {
-      lastError = error;
+  // ── 1. ÖNCELİK: LOKAL OLLAMA (qwen3:latest - SINIRSIZ) ──
+  const localText = await generateWithOllama(systemInstruction, userPrompt);
+  if (localText) {
+    console.log(`🦙 [Ollama: ${LOCAL_MODEL}] @${persona.username} yorumu üretti.`);
+    return localText.replace(/^["']|["']$/g, '');
+  }
 
-      // Kota aşımı (429) durumunda bekle ve tekrar dene
-      if ((error?.status === 429 || error?.message?.includes('429')) && retryCount < 2) {
-        console.log(`⏳ @${persona.username} (${modelName}) için kota sınırı, 10 saniye bekleniyor...`);
-        await sleep(10000);
-        return generateEntry(topicName, persona, existingEntries, retryCount + 1);
-      }
+  // ── 2. YEDEK: BULUT GROQ API (Bilgisayar/Ollama kapalıysa) ──
+  if (groqClient) {
+    const groqModels = ['llama-3.1-70b-versatile', 'llama-3.1-8b-instant'];
+    for (const model of groqModels) {
+      try {
+        const chatCompletion = await groqClient.chat.completions.create({
+          model,
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.75,
+        });
 
-      console.warn(`[Model Uyarısı] ${modelName} başarısız oldu, sıradaki modele geçiliyor... (${error?.message || error})`);
+        const text = chatCompletion.choices[0]?.message?.content?.trim();
+        if (text) {
+          console.log(`⚡ [Groq Fallback: ${model}] @${persona.username} yorumu üretti.`);
+          return text.replace(/^["']|["']$/g, '');
+        }
+      } catch {}
     }
   }
 
-  console.error(`[AI Hatası] @${persona.username} için hiçbir modelden metin üretilemedi:`, lastError?.message || lastError);
-  return '';
+  // ── 3. SON ÇARE: GEMINI ──
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const result = await model.generateContent(`${systemInstruction}\n\n${userPrompt}`);
+    const response = await result.response;
+    return response.text()?.trim().replace(/^["']|["']$/g, '') || '';
+  } catch {
+    console.error(`[AI Hatası] @${persona.username} için metin üretilemedi.`);
+    return '';
+  }
 }
