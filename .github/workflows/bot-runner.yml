@@ -14,13 +14,20 @@ jobs:
       - name: Repoyu Klonla
         uses: actions/checkout@v4
 
+      - name: Python Kurulumu
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Node.js Kurulumu
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
       - name: Bağımlılıkları Yükle
-        run: npm install
+        run: |
+          pip install cloudscraper beautifulsoup4 groq supabase
+          npm install
 
       - name: Ollama Kurulumu ve Başlatma
         run: |
@@ -32,16 +39,20 @@ jobs:
       - name: Bot Hesaplarını Oluştur (Init)
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: npm run bot:init
 
-      - name: Bot Yorumlarını Başlat (Runner)
+      - name: Ekşi Sözlük Tarayıcı ve Bot Akışı
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OLLAMA_MODEL: "qwen2.5:3b"
           OLLAMA_HOST: "http://127.0.0.1:11434"
-        run: npm run bot:run
+        run: python script.py
