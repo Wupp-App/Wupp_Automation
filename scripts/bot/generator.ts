@@ -1,18 +1,15 @@
 import { genAI } from './config';
 import { BotPersona } from './personas';
-import { Groq } from 'groq-sdk';
 
-const OLLAMA_HOST = 'http://127.0.0.1:11434';
-const LOCAL_MODEL = 'qwen3:latest';
-
-const groqApiKey = process.env.GROQ_API_KEY || '';
-const groqClient = groqApiKey ? new Groq({ apiKey: groqApiKey }) : null;
+const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
+const LOCAL_MODEL = process.env.OLLAMA_MODEL || 'qwen3:latest';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
 // 1. Yerel Ollama Çağrısı (Limitsiz & Ücretsiz)
 async function generateWithOllama(systemPrompt: string, userPrompt: string): Promise<string | null> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 sn timeout
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 sn timeout
 
     const response = await fetch(`${OLLAMA_HOST}/api/chat`, {
       method: 'POST',
@@ -38,6 +35,37 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
     const data = await response.json();
     const content = data?.message?.content?.trim();
     return content || null;
+  } catch {
+    return null;
+  }
+}
+
+// 2. Groq Bulut API Çağrısı (Native Fetch - SDK gerektirmez)
+async function generateWithGroq(model: string, systemPrompt: string, userPrompt: string): Promise<string | null> {
+  if (!GROQ_API_KEY) return null;
+
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.75,
+      }),
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const text = data?.choices?.[0]?.message?.content?.trim();
+    return text || null;
   } catch {
     return null;
   }
@@ -85,26 +113,13 @@ Yazım Kuralları:
     return localText.replace(/^["']|["']$/g, '');
   }
 
-  // ── 2. YEDEK: BULUT GROQ API (Bilgisayar/Ollama kapalıysa) ──
-  if (groqClient) {
-    const groqModels = ['llama-3.1-70b-versatile', 'llama-3.1-8b-instant'];
-    for (const model of groqModels) {
-      try {
-        const chatCompletion = await groqClient.chat.completions.create({
-          model,
-          messages: [
-            { role: 'system', content: systemInstruction },
-            { role: 'user', content: userPrompt },
-          ],
-          temperature: 0.75,
-        });
-
-        const text = chatCompletion.choices[0]?.message?.content?.trim();
-        if (text) {
-          console.log(`⚡ [Groq Fallback: ${model}] @${persona.username} yorumu üretti.`);
-          return text.replace(/^["']|["']$/g, '');
-        }
-      } catch {}
+  // ── 2. YEDEK: BULUT GROQ API (Lokal kapalıysa veya CI/GitHub Actions ortamında) ──
+  const groqModels = ['llama-3.1-70b-versatile', 'llama-3.1-8b-instant'];
+  for (const model of groqModels) {
+    const groqText = await generateWithGroq(model, systemInstruction, userPrompt);
+    if (groqText) {
+      console.log(`⚡ [Groq Fallback: ${model}] @${persona.username} yorumu üretti.`);
+      return groqText.replace(/^["']|["']$/g, '');
     }
   }
 
