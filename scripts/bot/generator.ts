@@ -17,6 +17,18 @@ export async function generateEntry(
   existingEntries: string[] = [],
   retryCount = 0
 ): Promise<string> {
+  // Rastgele 2 ile 5 arasında cümle hedefi belirle
+  const sentenceTarget = Math.floor(Math.random() * (5 - 2 + 1)) + 2;
+
+  // Çeşitlilik için rastgele ton varyasyonları
+  const variations = [
+    'kendi tecrübene dayanarak veya doğrudan bir örnek vererek anlat',
+    'durumu esprili veya hafif iğneleyici bir dille analiz et',
+    'net, dobra ve doğrudan konunun özüne parmak basan bir bakış açısı sergile',
+    'durumun arka planına veya toplumdaki yansımasına dikkat çek',
+  ];
+  const randomVariation = variations[Math.floor(Math.random() * variations.length)];
+
   const prompt = `
 Sen "${persona.username}" kullanıcı adına sahip, Ekşi Sözlük / sosyal medya platformunda yazan gerçek bir insansın.
 Kişiliğin ve üslubun: ${persona.tone}
@@ -26,9 +38,9 @@ ${existingEntries.length > 0 ? `Başlıktaki diğer bazı yazarların görüşle
 
 Yazım Kuralları:
 1. Türkçe yaz. Kesinlikle robotik veya ansiklopedik yazma.
-2. Gerçek bir sözlük yazarının gündelik tarzını benimse: hafif alaycı, doğrudan tespit yapan, konuşma diline kayan bir hava kullan.
-3. Asla "Merhaba", "Özetle", "Bence bu konu hakkında...", "Sonuç olarak" gibi kalıplar KULLANMA.
-4. Uzunluk: 1 ila 2 kısa cümle (maksimum 180 karakter).
+2. Gerçek bir sözlük yazarının gündelik tarzını benimse; ${randomVariation}.
+3. Asla "Merhaba", "Özetle", "Bence bu konu hakkında...", "Sonuç olarak" gibi yapay zeka kalıpları KULLANMA.
+4. Uzunluk: Tam olarak ${sentenceTarget} cümle kur. Çok kısa tek kelimelik veya gereksiz devasa paragraflar olmasın, doğal bir forum girdisi akışında olsun.
 5. Başlık veya tırnak işareti koyma; sadece yazacağın entry metnini döndür.
 `;
 
