@@ -3,6 +3,14 @@ import { BotPersona } from './personas';
 
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
+// Sırayla denenecek güncel ve yedek modeller
+const FALLBACK_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-1.5-flash',
+  'gemini-1.5-pro',
+  'gemini-2.5-pro',
+];
+
 export async function generateEntry(
   topicName: string,
   persona: BotPersona,
@@ -24,20 +32,32 @@ Yazım Kuralları:
 5. Başlık veya tırnak işareti koyma; sadece yazacağın entry metnini döndür.
 `;
 
-  try {
-    // Yeni SDK ile tam uyumlu güncel model
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    return response.text()?.trim() || '';
-  } catch (error: any) {
-    // Kota aşımı (429) durumunda çökmeden bekle ve tekrar dene
-    if ((error?.status === 429 || error?.message?.includes('429')) && retryCount < 3) {
-      console.log(`⏳ @${persona.username} için kota sınırı, 20 saniye beklenip tekrar deneniyor...`);
-      await sleep(20000);
-      return generateEntry(topicName, persona, existingEntries, retryCount + 1);
+  let lastError: any = null;
+
+  for (const modelName of FALLBACK_MODELS) {
+    try {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const text = response.text()?.trim() || '';
+
+      if (text) {
+        return text.replace(/^["']|["']$/g, '');
+      }
+    } catch (error: any) {
+      lastError = error;
+
+      // Kota aşımı (429) durumunda bekle ve tekrar dene
+      if ((error?.status === 429 || error?.message?.includes('429')) && retryCount < 2) {
+        console.log(`⏳ @${persona.username} (${modelName}) için kota sınırı, 10 saniye bekleniyor...`);
+        await sleep(10000);
+        return generateEntry(topicName, persona, existingEntries, retryCount + 1);
+      }
+
+      console.warn(`[Model Uyarısı] ${modelName} başarısız oldu, sıradaki modele geçiliyor... (${error?.message || error})`);
     }
-    console.error(`[AI Hatası] @${persona.username} için üretilemedi:`, error?.message || error);
-    return '';
   }
+
+  console.error(`[AI Hatası] @${persona.username} için hiçbir modelden metin üretilemedi:`, lastError?.message || lastError);
+  return '';
 }
