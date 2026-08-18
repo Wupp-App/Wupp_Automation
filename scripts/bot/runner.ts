@@ -2,7 +2,6 @@ import { supabase } from './config';
 import { botPersonas } from './personas';
 import { generateEntry } from './generator';
 
-// Rastgele bekleme fonksiyonu (ms cinsinden)
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function runBotFlow() {
@@ -23,7 +22,7 @@ async function runBotFlow() {
   const currentTopic = topics[0];
   console.log(`🎯 Hedef Başlık: #${currentTopic.topic_name} (ID: ${currentTopic.topic_id})`);
 
-  // 2. Mevcut entry'leri al (AI'a bağlam vermek için)
+  // 2. Mevcut entry'leri al
   const { data: existingEntriesData } = await supabase
     .from('entries')
     .select('entry')
@@ -33,9 +32,8 @@ async function runBotFlow() {
 
   const existingEntries = existingEntriesData?.map((e) => e.entry) || [];
 
-  // 3. Botları karıştır ve bir kısmını seç (örneğin 10-15 botluk doğal bir akış)
+  // 3. Botları karıştır ve 10-15 botluk liste oluştur
   const shuffledBots = [...botPersonas].sort(() => 0.5 - Math.random());
-  // Tek seferde 10-15 bot yorum yazması çok daha doğal ve güvenlidir
   const selectedBots = shuffledBots.slice(0, Math.min(15, shuffledBots.length));
 
   console.log(`👉 #${currentTopic.topic_name} başlığı için ${selectedBots.length} bot sıraya alındı.\n`);
@@ -44,7 +42,6 @@ async function runBotFlow() {
     const bot = selectedBots[i];
     console.log(`✍️ [${i + 1}/${selectedBots.length}] @${bot.username} yorum üretiyor...`);
 
-    // Bot profili id'sini al
     const { data: profile } = await supabase
       .from('profiles')
       .select('id')
@@ -52,17 +49,12 @@ async function runBotFlow() {
       .single();
 
     if (!profile) {
-      console.warn(`⚠️ @${bot.username} için veritabanında profil bulunamadı, atlanıyor.`);
+      console.warn(`⚠️ @${bot.username} profili bulunamadı, atlanıyor.`);
       continue;
     }
 
-    // AI ile entry üret
+    // AI üretimi (Fail-Safe ile asla boş dönmez)
     const generatedText = await generateEntry(currentTopic.topic_name, bot, existingEntries);
-
-    if (!generatedText) {
-      console.warn(`⚠️ @${bot.username} için metin üretilemedi, atlanıyor.`);
-      continue;
-    }
 
     // Entry'yi kaydet
     const { data: newEntry, error: insertError } = await supabase
@@ -71,7 +63,7 @@ async function runBotFlow() {
         topic_id: currentTopic.topic_id,
         user_id: profile.id,
         entry: generatedText,
-        likes: Math.floor(Math.random() * 15) + 1, // 1-15 arası rastgele beğeni
+        likes: Math.floor(Math.random() * 15) + 1,
       })
       .select()
       .single();
@@ -83,10 +75,10 @@ async function runBotFlow() {
       existingEntries.push(generatedText);
     }
 
-    // Son bot değilse araya rastgele 15-30 saniye bekleme koy (Kota ve kilitlenmeyi önler)
+    // İki yorum arası 30 - 50 saniye güvenli bekleme
     if (i < selectedBots.length - 1) {
-      const waitSeconds = Math.floor(Math.random() * (30 - 15 + 1)) + 15;
-      console.log(`⏳ Sonraki bot için ${waitSeconds} saniye bekleniyor...\n`);
+      const waitSeconds = Math.floor(Math.random() * (50 - 30 + 1)) + 30;
+      console.log(`⏳ Sonraki yorum için ${waitSeconds} saniye bekleniyor (Kota ve kilitlenme koruması)...\n`);
       await sleep(waitSeconds * 1000);
     }
   }
