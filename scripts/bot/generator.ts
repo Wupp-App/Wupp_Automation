@@ -2,16 +2,16 @@ import { genAI } from './config';
 import { BotPersona } from './personas';
 
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
-const LOCAL_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:3b';
+const LOCAL_MODEL = process.env.OLLAMA_MODEL || 'qwen3:latest';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
-// 1. Groq Bulut API (Hızlı, Doğal Türkçe ve Ücretsiz)
+// 1. Groq Bulut API
 async function generateWithGroq(model: string, systemPrompt: string, userPrompt: string): Promise<string | null> {
   if (!GROQ_API_KEY) return null;
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -32,10 +32,7 @@ async function generateWithGroq(model: string, systemPrompt: string, userPrompt:
     });
 
     clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      return null;
-    }
+    if (!response.ok) return null;
 
     const data = await response.json();
     return data?.choices?.[0]?.message?.content?.trim() || null;
@@ -44,11 +41,23 @@ async function generateWithGroq(model: string, systemPrompt: string, userPrompt:
   }
 }
 
-// 2. Yerel Ollama (CPU kilitlenmesin diye 6 sn timeout ile)
+// 2. Gemini Bulut API (İzole)
+async function generateWithGemini(modelName: string, systemPrompt: string, userPrompt: string): Promise<string | null> {
+  try {
+    const model = genAI.getGenerativeModel({ model: modelName });
+    const result = await model.generateContent(`${systemPrompt}\n\n${userPrompt}`);
+    const response = await result.response;
+    return response.text()?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// 3. Yerel / Runner Ollama (Optimize - Kilitlenmeyi önler)
 async function generateWithOllama(systemPrompt: string, userPrompt: string): Promise<string | null> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     const response = await fetch(`${OLLAMA_HOST}/api/chat`, {
       method: 'POST',
@@ -57,13 +66,14 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
       body: JSON.stringify({
         model: LOCAL_MODEL,
         stream: false,
+        keep_alive: '5m',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
         options: {
-          temperature: 0.8,
-          num_predict: 80,
+          temperature: 0.85,
+          num_predict: 90,
         },
       }),
     });
@@ -90,7 +100,7 @@ Sen Ekşi Sözlük'te yazan gerçek bir Türk internet kullanıcısısın. Kulla
 Tavrın: ${persona.tone || persona.style || 'Samimi, hafif alaycı, dobra, sokak ağzı'}.
 
 KESİN KURALLAR:
-1. Asla felsefi, edebi, akademik ve yapay zeka kalıpları ("çağrısına dönüştürüyor", "derinlemesine", "algı karmaşası", "statusuna geri dönmeyi") KULLANMA.
+1. Asla felsefi, edebi, akademik ve yapay zeka kalıpları ("çağrısına dönüştürüyor", "derinlemesine", "algı karmaşası", "statusuna geri dönmeyi", "kolektif hafıza") KULLANMA.
 2. Sokaktaki bir insanın Twitter/Sözlük'te yazacağı gibi doğrudan fikrini söyle.
 3. Tam olarak ${sentenceTarget} kısa cümle kur.
 4. Başlık veya tırnak işareti koyma; sadece entry metnini ver.
@@ -98,7 +108,7 @@ KESİN KURALLAR:
 ÖRNEK DOĞAL ENTRY'LER:
 - "yıllardır aynı senaryo, önce umut verip sonra kanser ediyorlar insanı. bu sene de bir şey değişmez."
 - "haberi görünce yine şaşırmadım. her transfer döneminde aynı isimleri ısıtıp ısıtıp önümüze koyuyorlar."
-- "valla kim ne derse desin bu kadroyla şampiyonluk hayal. defans hattı resmen evlere şenlik."
+- "valla kim ne derse desin bu kadroyla işimiz çok zor. defans hattı resmen evlere şenlik."
 `;
 
   const contextPart =
@@ -110,16 +120,8 @@ KESİN KURALLAR:
 
   let text: string | null = null;
 
-  // ── 1. ÖNCELİK: GROQ (Doğal Türkçe ve Hızlı) ──
-  const groqModels = [
-    'llama-3.3-70b-versatile',
-    'llama3-70b-8192',
-    'llama-3.1-8b-instant',
-    'llama3-8b-8192',
-    'mixtral-8x7b-32768',
-    'gemma2-9b-it',
-  ];
-
+  // ── 1. ÖNCELİK: GROQ (Doğrulanmış Kararlı Modeller) ──
+  const groqModels = ['llama3-70b-8192', 'llama3-8b-8192', 'mixtral-8x7b-32768'];
   for (const model of groqModels) {
     text = await generateWithGroq(model, systemInstruction, userPrompt);
     if (text) {
@@ -128,35 +130,28 @@ KESİN KURALLAR:
     }
   }
 
-  // ── 2. YEDEK: GEMINI (Güncel 3.6-flash ve 2.5-flash) ──
+  // ── 2. YEDEK: GEMINI ──
   if (!text) {
-    const geminiModels = ['gemini-3.6-flash', 'gemini-2.5-flash'];
+    const geminiModels = ['gemini-1.5-flash', 'gemini-1.5-pro'];
     for (const gModel of geminiModels) {
-      try {
-        const model = genAI.getGenerativeModel({ model: gModel });
-        const result = await model.generateContent(`${systemInstruction}\n\n${userPrompt}`);
-        const response = await result.response;
-        const resText = response.text()?.trim();
-        if (resText) {
-          console.log(`✨ [Gemini: ${gModel}] @${persona.username} yorum üretti.`);
-          text = resText;
-          break;
-        }
-      } catch {}
+      text = await generateWithGemini(gModel, systemInstruction, userPrompt);
+      if (text) {
+        console.log(`✨ [Gemini: ${gModel}] @${persona.username} yorum üretti.`);
+        break;
+      }
     }
   }
 
-  // ── 3. SON ÇARE: YEREL OLLAMA ──
+  // ── 3. SON ÇARE: OLLAMA ──
   if (!text) {
-    const ollamaText = await generateWithOllama(systemInstruction, userPrompt);
-    if (ollamaText) {
-      console.log(`🦙 [Ollama] @${persona.username} yorum üretti.`);
-      text = ollamaText;
+    text = await generateWithOllama(systemInstruction, userPrompt);
+    if (text) {
+      console.log(`🦙 [Ollama: ${LOCAL_MODEL}] @${persona.username} yorum üretti.`);
     }
   }
 
   if (!text) {
-    console.error(`[AI Hatası] @${persona.username} için metin üretilemedi.`);
+    console.error(`[AI Hatası] @${persona.username} için hiçbir AI kaynağından metin üretilemedi.`);
     return '';
   }
 
