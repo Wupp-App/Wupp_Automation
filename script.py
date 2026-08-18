@@ -17,12 +17,13 @@ client = Groq(api_key=GROQ_API_KEY)
 
 scraper = cloudscraper.create_scraper()
 
-# Günün tarihli akış URL'si dinamik oluşturulur (Örn: /basliklar/tarih/2026-08-18 veya /basliklar/gundem)
+# Günün tarihli akış URL'si ve güncel akışlar
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 TARGET_URLS = [
     f"https://eksisozluk.com/basliklar/tarih/{TODAY_STR}",
     "https://eksisozluk.com/basliklar/gundem",
     "https://eksisozluk.com/basliklar/populer",
+    "https://eksisozluk1923.com/basliklar/gundem",
 ]
 
 headers = {
@@ -74,7 +75,7 @@ def get_data_from_target_site():
                                 topic_list_repo.append(topic)
                     
                     if topic_list_repo:
-                        print(f"✅ {len(topic_list_repo)} adet başlık yakalandı.")
+                        print(f"✅ Toplam {len(topic_list_repo)} başlık çekildi.")
                         return topic_list_repo
         except Exception as e:
             print(f"✕ Bağlantı hatası ({url}): {e}")
@@ -82,7 +83,7 @@ def get_data_from_target_site():
     return topic_list_repo
 
 def get_already_saved_topics():
-    """Bugüne kadar veya weekly_topics tablosuna kaydedilmiş tüm başlıkları hafızaya çeker."""
+    """Daha önce kaydedilmiş tüm başlıkları küme olarak döner."""
     try:
         response = supabase.table("weekly_topics").select("topic").execute()
         return {row["topic"].strip().lower() for row in response.data if row.get("topic")}
@@ -91,9 +92,9 @@ def get_already_saved_topics():
         return set()
 
 def get_unique_topic_from_groq(topic, retries=2):
-    """Başlığı sözlük formatına çevirir ve Türkçe karakter redaksiyonu yapar."""
+    """Başlığı sözlük üslubuna çevirir ve Türkçe karakter kontrolü yapar."""
     system_prompt = (
-        "Sen Ekşi Sözlük tarzı Türk forumlarının kıdemli bir yazarısın. "
+        "Sen popüler Türk internet forumlarının kıdemli bir yazarısın. "
         "Görevin verilen gündem başlığını, anlamını, kişi ve olayları bozmadan doğal ve akıcı bir Türkçe sözlük başlığına çevirmektir.\n"
         "KURALLAR:\n"
         "1. Asla açıklama yapma. SADECE başlık metnini döndür.\n"
@@ -150,7 +151,7 @@ def save_to_supabase(original_topic, unique_topic):
         return False
 
 def trigger_bot_runner():
-    """Eklenen yeni başlıklar için botları çalıştırır."""
+    """Yeni eklenen başlık için TypeScript bot runner'ı tetikler."""
     print("\n🤖 Yorum botları tetikleniyor (runner.ts)...")
     npm_path = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
     try:
@@ -159,39 +160,32 @@ def trigger_bot_runner():
         print(f"Bot runner çalıştırma hatası: {e}")
 
 if __name__ == "__main__":
-    print(f"🔍 Bugünün ({TODAY_STR}) başlıkları taranıyor...")
+    print(f"🔍 Güncel sözlük başlıkları taranıyor...")
     raw_topics = get_data_from_target_site()
     
     if not raw_topics:
         print("İncelenecek başlık bulunamadı.")
         exit()
 
-    # Veritabanında daha önce işlenmiş başlıkların kümesi
     saved_cache = get_already_saved_topics()
-    
-    # Henüz eklenmemiş (cache'de olmayan) başlıkları filtrele
-    missing_topics = [t for t in raw_topics if t.strip().lower() not in saved_cache]
-    
-    print(f"📊 Toplam taranan: {len(raw_topics)} | Henüz eklenmemiş yeni başlık: {len(missing_topics)}")
+    found_new_topic = False
 
-    added_count = 0
-
-    for topic in missing_topics:
-        print(f"\n📌 Yeni başlık işleniyor: {topic}")
+    # Cache'de olmayan İLK taze başlığı bul, ekle, botları çalıştır ve döngüyü tamamla
+    for topic in raw_topics:
+        if topic.strip().lower() in saved_cache:
+            continue
+        
+        print(f"\n📌 Yeni taze başlık yakalandı: {topic}")
         unique_topic = get_unique_topic_from_groq(topic)
         
         if unique_topic:
             success = save_to_supabase(topic, unique_topic)
             if success:
-                saved_cache.add(topic.strip().lower())
-                added_count += 1
-                # Supabase ve Groq rate limitlerine takılmamak için kısa bekleme
-                time.sleep(1)
+                found_new_topic = True
+                trigger_bot_runner()
+                break  # Her periyotta sadece 1 yeni başlık ekler ve yorum botlarını sıraya sokar
 
-    if added_count > 0:
-        print(f"\n🎉 Toplam {added_count} adet yeni başlık eklendi.")
-        trigger_bot_runner()
-    else:
-        print("\nℹ️ Bugünün tüm başlıkları zaten cache'de mevcut, yeni başlık eklenmedi.")
+    if not found_new_topic:
+        print("\nℹ️ Tüm güncel başlıklar zaten cache'de mevcut. Yeni başlık bekleniyor.")
 
-    print("\n🏁 Günlük tarama tamamlandı.")
+    print("\n🏁 Periyodik tur tamamlandı.")
