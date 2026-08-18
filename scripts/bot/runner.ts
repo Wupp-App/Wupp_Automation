@@ -146,8 +146,8 @@ async function runBotCycle() {
       console.log(`❤️ Entry #${newEntry.id} için ${totalLikes} beğeni uygulandı.`);
     }
 
-    // İstekler arası bekleme
-    await sleep(4000);
+    // İstekler arası rate-limit koruma beklemesi
+    await sleep(3500);
   }
 
   console.log(`\n✨ #${topic.topic_name} başlığı için yorum ve beğeni akışı tamamlandı.`);
