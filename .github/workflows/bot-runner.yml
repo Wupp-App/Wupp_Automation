@@ -22,6 +22,13 @@ jobs:
       - name: Bağımlılıkları Yükle
         run: npm install
 
+      - name: Ollama Kurulumu ve Başlatma
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          sleep 5
+          ollama pull qwen2.5:3b
+
       - name: Bot Hesaplarını Oluştur (Init)
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
@@ -33,5 +40,8 @@ jobs:
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OLLAMA_MODEL: "qwen2.5:3b"
+          OLLAMA_HOST: "http://127.0.0.1:11434"
         run: npm run bot:run
