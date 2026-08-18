@@ -2,14 +2,14 @@ import { genAI } from './config';
 import { BotPersona } from './personas';
 
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
-const LOCAL_MODEL = process.env.OLLAMA_MODEL || 'qwen3:latest';
+const LOCAL_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:3b';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
-// 1. Yerel Ollama Çağrısı (Limitsiz & Ücretsiz)
+// 1. Yerel Ollama Çağrısı (GitHub Actions / Local)
 async function generateWithOllama(systemPrompt: string, userPrompt: string): Promise<string | null> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 sn timeout
+    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 sn timeout
 
     const response = await fetch(`${OLLAMA_HOST}/api/chat`, {
       method: 'POST',
@@ -30,17 +30,21 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
 
     clearTimeout(timeoutId);
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      const errText = await response.text();
+      console.warn(`[Ollama Uyarısı] HTTP ${response.status}: ${errText.slice(0, 100)}`);
+      return null;
+    }
 
     const data = await response.json();
     const content = data?.message?.content?.trim();
     return content || null;
-  } catch {
-    return null;
+  } catch (err: any) {
+    return null; // Local veya Runner Ollama kapalıysa sessizce Groq/Gemini'ye geçer
   }
 }
 
-// 2. Groq Bulut API Çağrısı (Native Fetch - SDK gerektirmez)
+// 2. Groq Bulut API Çağrısı (Native Fetch)
 async function generateWithGroq(model: string, systemPrompt: string, userPrompt: string): Promise<string | null> {
   if (!GROQ_API_KEY) return null;
 
@@ -61,12 +65,17 @@ async function generateWithGroq(model: string, systemPrompt: string, userPrompt:
       }),
     });
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      const errBody = await response.text();
+      console.warn(`[Groq ${model} Hatası]: HTTP ${response.status} - ${errBody.slice(0, 120)}`);
+      return null;
+    }
 
     const data = await response.json();
     const text = data?.choices?.[0]?.message?.content?.trim();
     return text || null;
-  } catch {
+  } catch (err: any) {
+    console.warn(`[Groq Bağlantı Hatası (${model})]:`, err?.message || err);
     return null;
   }
 }
@@ -106,31 +115,40 @@ Yazım Kuralları:
 
   const userPrompt = `Hakkında yorum yapacağın başlık: "${topicName}"${contextPart}\n\nEntry:`;
 
-  // ── 1. ÖNCELİK: LOKAL OLLAMA (qwen3:latest - SINIRSIZ) ──
+  // ── 1. ÖNCELİK: OLLAMA (GitHub Actions Runner veya Local) ──
   const localText = await generateWithOllama(systemInstruction, userPrompt);
   if (localText) {
-    console.log(`🦙 [Ollama: ${LOCAL_MODEL}] @${persona.username} yorumu üretti.`);
+    console.log(`🦙 [Ollama: ${LOCAL_MODEL}] @${persona.username} yorum üretti.`);
     return localText.replace(/^["']|["']$/g, '');
   }
 
-  // ── 2. YEDEK: BULUT GROQ API (Lokal kapalıysa veya CI/GitHub Actions ortamında) ──
-  const groqModels = ['llama-3.1-70b-versatile', 'llama-3.1-8b-instant'];
+  // ── 2. YEDEK: BULUT GROQ API ──
+  const groqModels = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
   for (const model of groqModels) {
     const groqText = await generateWithGroq(model, systemInstruction, userPrompt);
     if (groqText) {
-      console.log(`⚡ [Groq Fallback: ${model}] @${persona.username} yorumu üretti.`);
+      console.log(`⚡ [Groq Fallback: ${model}] @${persona.username} yorum üretti.`);
       return groqText.replace(/^["']|["']$/g, '');
     }
   }
 
-  // ── 3. SON ÇARE: GEMINI ──
-  try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-    const result = await model.generateContent(`${systemInstruction}\n\n${userPrompt}`);
-    const response = await result.response;
-    return response.text()?.trim().replace(/^["']|["']$/g, '') || '';
-  } catch {
-    console.error(`[AI Hatası] @${persona.username} için metin üretilemedi.`);
-    return '';
+  // ── 3. SON ÇARE: GEMINI MODELLERİ ──
+  const geminiModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+  for (const gModel of geminiModels) {
+    try {
+      const model = genAI.getGenerativeModel({ model: gModel });
+      const result = await model.generateContent(`${systemInstruction}\n\n${userPrompt}`);
+      const response = await result.response;
+      const text = response.text()?.trim();
+      if (text) {
+        console.log(`✨ [Gemini: ${gModel}] @${persona.username} yorum üretti.`);
+        return text.replace(/^["']|["']$/g, '');
+      }
+    } catch (geminiErr: any) {
+      console.warn(`[Gemini ${gModel} Hatası]:`, geminiErr?.message || geminiErr);
+    }
   }
+
+  console.error(`[AI Hatası] @${persona.username} için hiçbir AI kaynağından metin üretilemedi.`);
+  return '';
 }
