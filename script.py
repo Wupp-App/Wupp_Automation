@@ -1,10 +1,12 @@
 import os
 import time
 import subprocess
+import shutil
 import cloudscraper
 from bs4 import BeautifulSoup
 from groq import Groq
 from supabase import create_client, Client
+from datetime import datetime, timezone
 
 supabase_url = os.environ.get("SUPABASE_URL")
 supabase_key = os.environ.get("SUPABASE_KEY")
@@ -15,12 +17,12 @@ client = Groq(api_key=GROQ_API_KEY)
 
 scraper = cloudscraper.create_scraper()
 
-# Sırayla denenecek güncel Ekşi Sözlük akış URL'leri
+# Günün tarihli akış URL'si dinamik oluşturulur (Örn: /basliklar/tarih/2026-08-18 veya /basliklar/gundem)
+TODAY_STR = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 TARGET_URLS = [
+    f"https://eksisozluk.com/basliklar/tarih/{TODAY_STR}",
     "https://eksisozluk.com/basliklar/gundem",
     "https://eksisozluk.com/basliklar/populer",
-    "https://eksisozluk1923.com/basliklar/gundem",
-    "https://eksisozluk.com"
 ]
 
 headers = {
@@ -31,9 +33,7 @@ headers = {
 
 def turkish_title(text: str) -> str:
     """Türkçe karakterleri (i -> İ, ı -> I) bozmadan kelime başlarını büyütür."""
-    lower_map = {"I": "ı", "İ": "i"}
     upper_map = {"i": "İ", "ı": "I"}
-    
     words = text.split()
     formatted_words = []
     for word in words:
@@ -74,45 +74,37 @@ def get_data_from_target_site():
                                 topic_list_repo.append(topic)
                     
                     if topic_list_repo:
-                        print(f"✅ {len(topic_list_repo)} adet başlık başarıyla çekildi.")
+                        print(f"✅ {len(topic_list_repo)} adet başlık yakalandı.")
                         return topic_list_repo
-            else:
-                print(f"⚠️ {url} yanıt vermedi (HTTP {response.status_code}), alternatif deneniyor...")
         except Exception as e:
             print(f"✕ Bağlantı hatası ({url}): {e}")
 
     return topic_list_repo
 
-def is_topic_already_saved(topic):
-    """Bu başlığın daha önce hiç işlenip işlenmediğini kontrol eder."""
+def get_already_saved_topics():
+    """Bugüne kadar veya weekly_topics tablosuna kaydedilmiş tüm başlıkları hafızaya çeker."""
     try:
-        response = supabase.table("weekly_topics")\
-                    .select("topic")\
-                    .eq("topic", topic)\
-                    .limit(1)\
-                    .execute()
-        return len(response.data) > 0
+        response = supabase.table("weekly_topics").select("topic").execute()
+        return {row["topic"].strip().lower() for row in response.data if row.get("topic")}
     except Exception as e:
-        print(f"Supabase kontrol hatası: {e}")
-        return True
+        print(f"Cache kontrol hatası: {e}")
+        return set()
 
-def get_unique_topic_from_groq(topic, retries=3):
-    """Başlığı sözlük üslubuna çevirir ve 2. aşamada Türkçe kontrolü yapar."""
+def get_unique_topic_from_groq(topic, retries=2):
+    """Başlığı sözlük formatına çevirir ve Türkçe karakter redaksiyonu yapar."""
     system_prompt = (
-        "Sen Ekşi Sözlük gibi popüler Türk internet forumlarının kıdemli bir yazarısın. "
+        "Sen Ekşi Sözlük tarzı Türk forumlarının kıdemli bir yazarısın. "
         "Görevin verilen gündem başlığını, anlamını, kişi ve olayları bozmadan doğal ve akıcı bir Türkçe sözlük başlığına çevirmektir.\n"
         "KURALLAR:\n"
         "1. Asla açıklama yapma. SADECE başlık metnini döndür.\n"
         "2. Türkçe karakterleri (ı, i, ğ, ü, ş, ö, ç) eksiksiz ve doğru kullan.\n"
-        "3. Resmi veya haber dili kullanma; gündelik sözlük jargonu olsun.\n"
-        "4. Anlamsız, saçma veya bağlamından kopuk kelime öbekleri üretme."
+        "3. Resmi veya haber dili kullanma; gündelik sözlük jargonu olsun."
     )
 
     for attempt in range(retries):
         try:
-            # 1. Aşama: Başlığı yeniden yaz
             gen_response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="llama-3.1-70b-versatile",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Şu başlığı sözlük formatında yeniden yaz: '{topic}'"}
@@ -121,19 +113,17 @@ def get_unique_topic_from_groq(topic, retries=3):
             )
             raw_title = gen_response.choices[0].message.content.strip().replace('"', '')
 
-            # 2. Aşama: Redaksiyon & Türkçe İmla Kontrolü
             verify_prompt = (
                 f"Orijinal Başlık: '{topic}'\n"
                 f"Üretilen Başlık: '{raw_title}'\n\n"
-                "Bu üretilen başlık Türkçe dilbilgisi, anlam bütünlüğü ve Türkçe karakterler açısından mantıklı mı? "
-                "Eğer mantıklıysa sadece düzeltilmiş halini yaz. Eğer saçmaysa veya anlamsızsa orijinal başlığı en temiz haliyle döndür. "
-                "Sadece ve sadece başlığı döndür, başka hiçbir şey yazma."
+                "Bu üretilen başlık Türkçe dilbilgisi ve Türkçe karakterler açısından doğruysa sadece temiz halini yaz. "
+                "Değilse orijinal başlığı en temiz haliyle döndür. Başka hiçbir açıklama yazma."
             )
             
             verify_response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="llama-3.1-70b-versatile",
                 messages=[
-                    {"role": "system", "content": "Sen bir Türkçe redaktörüsün. Sadece temizlenmiş başlığı verirsin."},
+                    {"role": "system", "content": "Sen bir Türkçe redaktörüsün. Sadece temiz başlığı verirsin."},
                     {"role": "user", "content": verify_prompt}
                 ],
                 temperature=0.2
@@ -144,8 +134,8 @@ def get_unique_topic_from_groq(topic, retries=3):
                 return turkish_title(final_title)
 
         except Exception as e:
-            print(f"Groq API Deneme {attempt + 1} Hatası: {e}")
-            time.sleep(2)
+            print(f"Groq API Hatası (Deneme {attempt + 1}): {e}")
+            time.sleep(1)
 
     return turkish_title(topic)
 
@@ -153,45 +143,55 @@ def save_to_supabase(original_topic, unique_topic):
     try:
         supabase.table("topics").insert({"topic_name": unique_topic}).execute()
         supabase.table("weekly_topics").insert({"topic": original_topic}).execute()
-        print(f"✅ Yeni başlık başarıyla eklendi: '{original_topic}' -> #{unique_topic}")
+        print(f"✅ Yeni başlık veritabanına eklendi: '{original_topic}' -> #{unique_topic}")
         return True
     except Exception as e:
         print(f"✕ Supabase kayıt hatası: {e}")
         return False
 
 def trigger_bot_runner():
-    """Yeni başlık açılınca botların yorum ve beğeni atmasını sağlar."""
+    """Eklenen yeni başlıklar için botları çalıştırır."""
     print("\n🤖 Yorum botları tetikleniyor (runner.ts)...")
+    npm_path = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
     try:
-        subprocess.run(["npm", "run", "bot:run"], check=True)
+        subprocess.run([npm_path, "run", "bot:run"], shell=True, check=True)
     except Exception as e:
         print(f"Bot runner çalıştırma hatası: {e}")
 
 if __name__ == "__main__":
-    print("🔍 Ekşi Sözlük taranıyor...")
+    print(f"🔍 Bugünün ({TODAY_STR}) başlıkları taranıyor...")
     raw_topics = get_data_from_target_site()
     
     if not raw_topics:
         print("İncelenecek başlık bulunamadı.")
         exit()
 
-    found_new_topic = False
+    # Veritabanında daha önce işlenmiş başlıkların kümesi
+    saved_cache = get_already_saved_topics()
+    
+    # Henüz eklenmemiş (cache'de olmayan) başlıkları filtrele
+    missing_topics = [t for t in raw_topics if t.strip().lower() not in saved_cache]
+    
+    print(f"📊 Toplam taranan: {len(raw_topics)} | Henüz eklenmemiş yeni başlık: {len(missing_topics)}")
 
-    for topic in raw_topics:
-        if is_topic_already_saved(topic):
-            continue
-        
-        print(f"\n📌 Yeni taze başlık yakalandı: {topic}")
+    added_count = 0
+
+    for topic in missing_topics:
+        print(f"\n📌 Yeni başlık işleniyor: {topic}")
         unique_topic = get_unique_topic_from_groq(topic)
         
         if unique_topic:
             success = save_to_supabase(topic, unique_topic)
             if success:
-                found_new_topic = True
-                trigger_bot_runner()
-                break
+                saved_cache.add(topic.strip().lower())
+                added_count += 1
+                # Supabase ve Groq rate limitlerine takılmamak için kısa bekleme
+                time.sleep(1)
 
-    if not found_new_topic:
-        print("ℹ️ Ekşi Sözlük'teki tüm güncel başlıklar zaten veritabanında mevcut. Yeni başlık bekleniyor.")
+    if added_count > 0:
+        print(f"\n🎉 Toplam {added_count} adet yeni başlık eklendi.")
+        trigger_bot_runner()
+    else:
+        print("\nℹ️ Bugünün tüm başlıkları zaten cache'de mevcut, yeni başlık eklenmedi.")
 
-    print("\n🏁 Periyodik tur tamamlandı.")
+    print("\n🏁 Günlük tarama tamamlandı.")
