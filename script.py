@@ -82,7 +82,6 @@ def get_data_from_target_site():
                                 small_tag.decompose()
                             
                             raw_text = a_tag.get_text(strip=True)
-                            # Sondaki entry sayısını temizle (örn: "başlık 45" -> "başlık")
                             clean_topic = re.sub(r'\s+\d+$', '', raw_text).strip()
                             if clean_topic and clean_topic not in topic_list_repo:
                                 topic_list_repo.append(clean_topic)
@@ -96,7 +95,6 @@ def get_data_from_target_site():
     return topic_list_repo
 
 def get_already_saved_topics():
-    """Daha önce kaydedilmiş tüm başlıkları küme olarak döner."""
     try:
         response = supabase.table("weekly_topics").select("topic").execute()
         return {row["topic"].strip().lower() for row in response.data if row.get("topic")}
@@ -104,8 +102,28 @@ def get_already_saved_topics():
         print(f"Cache kontrol hatası: {e}")
         return set()
 
+def query_groq(system_prompt: str, user_prompt: str, temperature=0.7) -> str | None:
+    if not groq_client:
+        return None
+    models = ["llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768"]
+    for model in models:
+        try:
+            chat = groq_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=temperature
+            )
+            text = chat.choices[0].message.content.strip().strip('"\'')
+            if text:
+                return text
+        except Exception:
+            pass
+    return None
+
 def query_ollama(system_prompt: str, user_prompt: str) -> str | None:
-    """Yerel/Runner Ollama servisine HTTP üzerinden istek atar."""
     try:
         req_data = json.dumps({
             "model": OLLAMA_MODEL,
@@ -130,30 +148,7 @@ def query_ollama(system_prompt: str, user_prompt: str) -> str | None:
         pass
     return None
 
-def query_groq(system_prompt: str, user_prompt: str, temperature=0.7) -> str | None:
-    """Groq API üzerinden hızlı yanıt alır."""
-    if not groq_client:
-        return None
-    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-    for model in models:
-        try:
-            chat = groq_client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=temperature
-            )
-            text = chat.choices[0].message.content.strip().strip('"\'')
-            if text:
-                return text
-        except Exception as e:
-            print(f"⚠️ Groq ({model}) hatası: {e}")
-    return None
-
-def get_unique_topic_from_ai(topic: str, retries=2) -> str:
-    """Başlığı sözlük üslubuna çevirir ve Türkçe karakter kontrolü yapar."""
+def get_unique_topic_from_ai(topic: str) -> str:
     system_prompt = (
         "Sen popüler Türk internet forumlarının kıdemli bir yazarısın. "
         "Görevin verilen gündem başlığını, anlamını, kişi ve olayları bozmadan doğal ve akıcı bir Türkçe sözlük başlığına çevirmektir.\n"
@@ -162,34 +157,14 @@ def get_unique_topic_from_ai(topic: str, retries=2) -> str:
         "2. Türkçe karakterleri (ı, i, ğ, ü, ş, ö, ç) eksiksiz ve doğru kullan.\n"
         "3. Resmi veya haber dili kullanma; gündelik sözlük jargonu olsun."
     )
-
     user_prompt = f"Şu başlığı sözlük formatında yeniden yaz: '{topic}'"
 
-    for _ in range(retries):
-        # 1. Önce Ollama dene
+    raw_title = query_groq(system_prompt, user_prompt, temperature=0.7)
+    if not raw_title:
         raw_title = query_ollama(system_prompt, user_prompt)
-        
-        # 2. Ollama yoksa Groq dene
-        if not raw_title:
-            raw_title = query_groq(system_prompt, user_prompt, temperature=0.7)
 
-        if raw_title:
-            verify_system = "Sen bir Türkçe redaktörüsün. Sadece temiz başlığı verirsin."
-            verify_user = (
-                f"Orijinal Başlık: '{topic}'\n"
-                f"Üretilen Başlık: '{raw_title}'\n\n"
-                "Bu üretilen başlık Türkçe dilbilgisi ve Türkçe karakterler açısından doğruysa sadece temiz halini yaz. "
-                "Değilse orijinal başlığı en temiz haliyle döndür. Başka hiçbir açıklama yazma."
-            )
-            
-            final_title = query_ollama(verify_system, verify_user)
-            if not final_title:
-                final_title = query_groq(verify_system, verify_user, temperature=0.2)
-            
-            if final_title:
-                return turkish_title(final_title)
-            return turkish_title(raw_title)
-
+    if raw_title:
+        return turkish_title(raw_title)
     return turkish_title(topic)
 
 def save_to_supabase(original_topic: str, unique_topic: str) -> bool:
@@ -203,10 +178,9 @@ def save_to_supabase(original_topic: str, unique_topic: str) -> bool:
         return False
 
 def trigger_bot_runner():
-    """Yeni eklenen başlık için TypeScript bot runner'ı tetikler."""
     print("\n🤖 Yorum botları tetikleniyor (runner.ts)...")
     npm_path = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
-    use_shell = os.name == "nt"  # Windows için True, Linux/macOS için False
+    use_shell = os.name == "nt"
     try:
         subprocess.run([npm_path, "run", "bot:run"], shell=use_shell, check=True)
     except Exception as e:
@@ -223,7 +197,6 @@ if __name__ == "__main__":
     saved_cache = get_already_saved_topics()
     found_new_topic = False
 
-    # Cache'de olmayan İLK taze başlığı bul, ekle, botları çalıştır ve döngüyü tamamla
     for topic in raw_topics:
         if topic.strip().lower() in saved_cache:
             continue
@@ -236,7 +209,7 @@ if __name__ == "__main__":
             if success:
                 found_new_topic = True
                 trigger_bot_runner()
-                break  # Her periyotta sadece 1 yeni başlık ekler ve yorum botlarını sıraya sokar
+                break
 
     if not found_new_topic:
         print("\nℹ️ Tüm güncel başlıklar zaten cache'de mevcut. Yeni başlık bekleniyor.")
