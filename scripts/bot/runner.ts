@@ -1,156 +1,97 @@
-import { supabaseAdmin } from './config';
-import { BOT_PERSONAS, BotPersona } from './personas';
+import { supabase } from './config';
+import { botPersonas } from './personas';
 import { generateEntry } from './generator';
 
-const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+// Rastgele bekleme fonksiyonu (ms cinsinden)
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Rastgele 10-49 arası bot beğenisi ekleyen fonksiyon
-async function addRandomBotLikes(
-  entryId: number | string,
-  authorBotId: string,
-  allBotProfiles: { id: string; username: string }[]
-): Promise<number> {
-  const eligibleBots = allBotProfiles.filter((b) => b.id !== authorBotId);
-  if (eligibleBots.length === 0) return 0;
-
-  const minLikes = Math.min(10, eligibleBots.length);
-  const maxLikes = eligibleBots.length;
-  const likeCount = Math.floor(Math.random() * (maxLikes - minLikes + 1)) + minLikes;
-
-  const shuffled = [...eligibleBots].sort(() => 0.5 - Math.random());
-  const selectedBots = shuffled.slice(0, likeCount);
-
-  const likeRows = selectedBots.map((bot) => ({
-    entry_id: entryId,
-    user_id: bot.id,
-  }));
-
-  const { error: likesErr } = await supabaseAdmin
-    .from('entry_likes')
-    .insert(likeRows);
-
-  if (likesErr) {
-    // entry_likes tablosu yoksa veya kısıt varsa sadece sayaç güncellenir
-  }
-
-  await supabaseAdmin
-    .from('entries')
-    .update({ likes: selectedBots.length })
-    .eq('id', entryId);
-
-  return selectedBots.length;
-}
-
-async function runBotCycle() {
+async function runBotFlow() {
   console.log('🚀 En son açılan başlık aranıyor...');
 
-  // 1. Bot profillerini çek
-  const botUsernames = BOT_PERSONAS.map((b) => b.username);
-  const { data: botProfiles, error: botProfilesErr } = await supabaseAdmin
-    .from('profiles')
-    .select('id, username')
-    .in('username', botUsernames);
-
-  if (botProfilesErr || !botProfiles || botProfiles.length === 0) {
-    console.error('Bot profilleri veritabanında bulunamadı! Önce "npm run bot:init" çalıştırın.');
-    return;
-  }
-
-  const botMap = new Map(botProfiles.map((p) => [p.username, p.id]));
-
-  // 2. Sadece EN SON açılan 1 başlığı al
-  const { data: latestTopics, error: topicErr } = await supabaseAdmin
+  // 1. En güncel başlığı çek
+  const { data: topics, error: topicError } = await supabase
     .from('topics')
-    .select('topic_id, topic_name, created_at')
+    .select('topic_id, topic_name')
     .order('created_at', { ascending: false })
     .limit(1);
 
-  if (topicErr || !latestTopics || latestTopics.length === 0) {
-    console.log('İşlenecek başlık bulunamadı.');
+  if (topicError || !topics || topics.length === 0) {
+    console.error('❌ Başlık bulunamadı veya veritabanı hatası:', topicError);
     return;
   }
 
-  const topic = latestTopics[0];
-  console.log(`\n🎯 Hedef Başlık: #${topic.topic_name} (ID: ${topic.topic_id})`);
+  const currentTopic = topics[0];
+  console.log(`🎯 Hedef Başlık: #${currentTopic.topic_name} (ID: ${currentTopic.topic_id})`);
 
-  // 3. Bu başlığa daha önce yazmış botları ve mevcut entry'leri çek
-  const { data: existingEntries } = await supabaseAdmin
+  // 2. Mevcut entry'leri al (AI'a bağlam vermek için)
+  const { data: existingEntriesData } = await supabase
     .from('entries')
-    .select('user_id, entry')
-    .eq('topic_id', topic.topic_id)
-    .order('created_at', { ascending: true });
+    .select('entry')
+    .eq('topic_id', currentTopic.topic_id)
+    .order('created_at', { ascending: true })
+    .limit(10);
 
-  const existingUserIds = new Set(existingEntries?.map((e) => e.user_id) || []);
-  const recentEntryTexts = existingEntries?.map((e) => e.entry) || [];
+  const existingEntries = existingEntriesData?.map((e) => e.entry) || [];
 
-  // Henüz yazmamış botları bul
-  const availableBots = BOT_PERSONAS.filter((persona) => {
-    const profileId = botMap.get(persona.username);
-    return profileId && !existingUserIds.has(profileId);
-  });
+  // 3. Botları karıştır ve bir kısmını seç (örneğin 10-15 botluk doğal bir akış)
+  const shuffledBots = [...botPersonas].sort(() => 0.5 - Math.random());
+  // Tek seferde 10-15 bot yorum yazması çok daha doğal ve güvenlidir
+  const selectedBots = shuffledBots.slice(0, Math.min(15, shuffledBots.length));
 
-  if (availableBots.length === 0) {
-    console.log(`✓ #${topic.topic_name} başlığına yazılabilecek uygun bot kalmamış.`);
-    return;
-  }
+  console.log(`👉 #${currentTopic.topic_name} başlığı için ${selectedBots.length} bot sıraya alındı.\n`);
 
-  // 4. 30 ile 50 arasında (veya kalan müsait bot kadar) rastgele sayıda bot seç
-  const targetBotCount = Math.min(
-    availableBots.length,
-    Math.floor(Math.random() * (50 - 30 + 1)) + 30
-  );
+  for (let i = 0; i < selectedBots.length; i++) {
+    const bot = selectedBots[i];
+    console.log(`✍️ [${i + 1}/${selectedBots.length}] @${bot.username} yorum üretiyor...`);
 
-  const selectedBots = [...availableBots]
-    .sort(() => 0.5 - Math.random())
-    .slice(0, targetBotCount);
+    // Bot profili id'sini al
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('username', bot.username)
+      .single();
 
-  console.log(`👉 #${topic.topic_name} başlığı için ${selectedBots.length} bot rastgele seçildi ve sıraya alındı.`);
-
-  // 5. Seçilen botlar sırayla entry girsin
-  for (const persona of selectedBots) {
-    const botUserId = botMap.get(persona.username);
-    if (!botUserId) continue;
-
-    console.log(`✍️ @${persona.username} yorum üretiyor...`);
-
-    const contextTexts = recentEntryTexts.slice(-4);
-    const generatedText = await generateEntry(topic.topic_name, persona, contextTexts);
-
-    if (!generatedText) {
-      console.log(`⚠️ @${persona.username} için metin üretilemedi, atlanıyor.`);
+    if (!profile) {
+      console.warn(`⚠️ @${bot.username} için veritabanında profil bulunamadı, atlanıyor.`);
       continue;
     }
 
-    const { data: newEntry, error: insertErr } = await supabaseAdmin
-      .from('entries')
-      .insert([
-        {
-          topic_id: topic.topic_id,
-          user_id: botUserId,
-          entry: generatedText,
-          likes: 0,
-          reply_count: 0,
-        },
-      ])
-      .select('id')
-      .single();
+    // AI ile entry üret
+    const generatedText = await generateEntry(currentTopic.topic_name, bot, existingEntries);
 
-    if (insertErr || !newEntry) {
-      console.error(`✕ Entry eklenemedi (@${persona.username}):`, insertErr?.message);
-    } else {
-      console.log(`✅ [Entry #${newEntry.id}] @${persona.username}: "${generatedText}"`);
-      recentEntryTexts.push(generatedText);
-
-      // Rastgele 10-49 arası bot beğenisi ekle
-      const totalLikes = await addRandomBotLikes(newEntry.id, botUserId, botProfiles);
-      console.log(`❤️ Entry #${newEntry.id} için ${totalLikes} beğeni uygulandı.`);
+    if (!generatedText) {
+      console.warn(`⚠️ @${bot.username} için metin üretilemedi, atlanıyor.`);
+      continue;
     }
 
-    // İstekler arası rate-limit koruma beklemesi
-    await sleep(3500);
+    // Entry'yi kaydet
+    const { data: newEntry, error: insertError } = await supabase
+      .from('entries')
+      .insert({
+        topic_id: currentTopic.topic_id,
+        user_id: profile.id,
+        entry: generatedText,
+        likes: Math.floor(Math.random() * 15) + 1, // 1-15 arası rastgele beğeni
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error(`❌ @${bot.username} entry kaydedilemedi:`, insertError.message);
+    } else {
+      console.log(`✅ [Entry #${newEntry.id || ''}] @${bot.username}: "${generatedText}"`);
+      existingEntries.push(generatedText);
+    }
+
+    // Son bot değilse araya rastgele 15-30 saniye bekleme koy (Kota ve kilitlenmeyi önler)
+    if (i < selectedBots.length - 1) {
+      const waitSeconds = Math.floor(Math.random() * (30 - 15 + 1)) + 15;
+      console.log(`⏳ Sonraki bot için ${waitSeconds} saniye bekleniyor...\n`);
+      await sleep(waitSeconds * 1000);
+    }
   }
 
-  console.log(`\n✨ #${topic.topic_name} başlığı için yorum ve beğeni akışı tamamlandı.`);
+  console.log('\n🏁 Tüm bot yorumları başarıyla tamamlandı!');
 }
 
-runBotCycle();
+runBotFlow();
