@@ -5,11 +5,50 @@ const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
 const LOCAL_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:3b';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
-// 1. Yerel Ollama Çağrısı
+// 1. Groq Bulut API (Hızlı, Doğal Türkçe ve Ücretsiz)
+async function generateWithGroq(model: string, systemPrompt: string, userPrompt: string): Promise<string | null> {
+  if (!GROQ_API_KEY) return null;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.85,
+        max_tokens: 150,
+      }),
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json();
+    return data?.choices?.[0]?.message?.content?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// 2. Yerel Ollama (CPU kilitlenmesin diye 6 sn timeout ile)
 async function generateWithOllama(systemPrompt: string, userPrompt: string): Promise<string | null> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
     const response = await fetch(`${OLLAMA_HOST}/api/chat`, {
       method: 'POST',
@@ -23,8 +62,8 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
           { role: 'user', content: userPrompt },
         ],
         options: {
-          temperature: 0.85,
-          top_p: 0.9,
+          temperature: 0.8,
+          num_predict: 80,
         },
       }),
     });
@@ -39,90 +78,81 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
   }
 }
 
-// 2. Groq Bulut API Çağrısı
-async function generateWithGroq(model: string, systemPrompt: string, userPrompt: string): Promise<string | null> {
-  if (!GROQ_API_KEY) return null;
-
-  try {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROQ_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0.85,
-        top_p: 0.9,
-      }),
-    });
-
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    return data?.choices?.[0]?.message?.content?.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
 export async function generateEntry(
   topicName: string,
   persona: BotPersona,
   existingEntries: string[] = []
 ): Promise<string> {
-  // Rastgele 2 ile 4 cümle arası hedef
-  const targetSentences = Math.floor(Math.random() * 3) + 2;
+  const sentenceTarget = Math.floor(Math.random() * 2) + 2; // 2 veya 3 cümle
 
   const systemInstruction = `
-Sen Ekşi Sözlük yazarı olan gerçek, sokaktaki bir insansın. Kullanıcı adın: "${persona.username}".
-Kişiliğin/Tavrın: ${persona.tone || persona.style || 'Gündelik, hafif kinayeli, net ve samimi'}.
+Sen Ekşi Sözlük'te yazan gerçek bir Türk internet kullanıcısısın. Kullanıcı adın: "${persona.username}".
+Tavrın: ${persona.tone || persona.style || 'Samimi, hafif alaycı, dobra, sokak ağzı'}.
 
 KESİN KURALLAR:
-1. ASLA felsefi, akademik, edebi, ansiklopedik veya edatlarla dolu cümleler kurma ("gösteren-gösterilen", "algı karmaşası", "kolektif hafıza", "altını çizmek", "bu başlık gösteriyor ki" gibi yapay zeka klişelerini yazarsan sistem çöker!).
-2. Konuşma diliyle, sokak Türkçesiyle veya gerçek bir sözlük yazarı gibi doğrudan konuya gir.
-3. Uzunluk: En az 2, en fazla 4 cümle olsun. Asla paragraf döktürme.
-4. Tırnak işareti, başlık tekrarı veya açıklama metni ekleme. Sadece entry'yi yaz.
+1. Asla felsefi, edebi, akademik ve yapay zeka kalıpları ("çağrısına dönüştürüyor", "derinlemesine", "algı karmaşası", "statusuna geri dönmeyi") KULLANMA.
+2. Sokaktaki bir insanın Twitter/Sözlük'te yazacağı gibi doğrudan fikrini söyle.
+3. Tam olarak ${sentenceTarget} kısa cümle kur.
+4. Başlık veya tırnak işareti koyma; sadece entry metnini ver.
 
-İYİ VE GERÇEKÇİ ÖRNEKLER:
-- Başlık: "istanbul trafiği" -> "her gün ömrümden iki saat çalan illet. metrobüse binmektense evde oturup duvara bakmayı tercih ederim bazen."
-- Başlık: "asgari ücret zammı" -> "markete gidip iki parça şey alana kadar çok iyi para gibi geliyordu. kasada yine gerçeğe tosladık."
-- Başlık: "fenerbahçe" -> "yine bir şekilde umutlandırıp sezon sonu kahredecekler bizi, adım gibi eminim."
+ÖRNEK DOĞAL ENTRY'LER:
+- "yıllardır aynı senaryo, önce umut verip sonra kanser ediyorlar insanı. bu sene de bir şey değişmez."
+- "haberi görünce yine şaşırmadım. her transfer döneminde aynı isimleri ısıtıp ısıtıp önümüze koyuyorlar."
+- "valla kim ne derse desin bu kadroyla şampiyonluk hayal. defans hattı resmen evlere şenlik."
 `;
 
   const contextPart =
     existingEntries.length > 0
-      ? `\nÖnceki yazarların bahsettiği bazı noktalar:\n- ${existingEntries.slice(-2).join('\n- ')}`
+      ? `\nDiğer yazarların dedikleri:\n- ${existingEntries.slice(-2).join('\n- ')}`
       : '';
 
-  const userPrompt = `Yorum yazacağın başlık: "${topicName}"${contextPart}
+  const userPrompt = `Başlık: "${topicName}"${contextPart}\n\nDoğal ve kısa sözlük entry'si yaz:`;
 
-Lütfen yukarıdaki kurallara uyarak tam ${targetSentences} cümlelik doğal ve samimi bir sözlük entry'si yaz:`;
+  let text: string | null = null;
 
-  // 1. Önce Ollama
-  let text = await generateWithOllama(systemInstruction, userPrompt);
+  // ── 1. ÖNCELİK: GROQ (Doğal Türkçe ve Hızlı) ──
+  const groqModels = [
+    'llama-3.3-70b-versatile',
+    'llama3-70b-8192',
+    'llama-3.1-8b-instant',
+    'llama3-8b-8192',
+    'mixtral-8x7b-32768',
+    'gemma2-9b-it',
+  ];
 
-  // 2. Yedek Groq
-  if (!text) {
-    const groqModels = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
-    for (const model of groqModels) {
-      text = await generateWithGroq(model, systemInstruction, userPrompt);
-      if (text) break;
+  for (const model of groqModels) {
+    text = await generateWithGroq(model, systemInstruction, userPrompt);
+    if (text) {
+      console.log(`⚡ [Groq: ${model}] @${persona.username} yorum üretti.`);
+      break;
     }
   }
 
-  // 3. Yedek Gemini
+  // ── 2. YEDEK: GEMINI (Güncel 3.6-flash ve 2.5-flash) ──
   if (!text) {
-    try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-      const result = await model.generateContent(`${systemInstruction}\n\n${userPrompt}`);
-      const response = await result.response;
-      text = response.text()?.trim();
-    } catch {}
+    const geminiModels = ['gemini-3.6-flash', 'gemini-2.5-flash'];
+    for (const gModel of geminiModels) {
+      try {
+        const model = genAI.getGenerativeModel({ model: gModel });
+        const result = await model.generateContent(`${systemInstruction}\n\n${userPrompt}`);
+        const response = await result.response;
+        const resText = response.text()?.trim();
+        if (resText) {
+          console.log(`✨ [Gemini: ${gModel}] @${persona.username} yorum üretti.`);
+          text = resText;
+          break;
+        }
+      } catch {}
+    }
+  }
+
+  // ── 3. SON ÇARE: YEREL OLLAMA ──
+  if (!text) {
+    const ollamaText = await generateWithOllama(systemInstruction, userPrompt);
+    if (ollamaText) {
+      console.log(`🦙 [Ollama] @${persona.username} yorum üretti.`);
+      text = ollamaText;
+    }
   }
 
   if (!text) {
@@ -130,17 +160,15 @@ Lütfen yukarıdaki kurallara uyarak tam ${targetSentences} cümlelik doğal ve 
     return '';
   }
 
-  // Temizleme: Baştaki/sondaki tırnakları ve gereksiz boşlukları at
+  // Temizleme
   let cleanText = text
     .replace(/^["'“”]+|["'“”]+$/g, '')
     .replace(/^(entry:|yorum:)/i, '')
     .trim();
 
-  // İlk harfi küçük yapma (Ekşi Sözlük stili doğallık için opsiyonel)
-  if (cleanText.length > 0 && Math.random() > 0.3) {
+  if (cleanText.length > 0 && Math.random() > 0.4) {
     cleanText = cleanText.charAt(0).toLowerCase() + cleanText.slice(1);
   }
 
-  console.log(`💬 [@${persona.username}]: "${cleanText}"`);
   return cleanText;
 }
