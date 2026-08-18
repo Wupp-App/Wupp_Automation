@@ -1,11 +1,10 @@
+import os
+import time
+import subprocess
 import cloudscraper
 from bs4 import BeautifulSoup
-import os
-import subprocess
-from groq import Groq 
-import time
+from groq import Groq
 from supabase import create_client, Client
-from datetime import datetime, timezone
 
 supabase_url = os.environ.get("SUPABASE_URL")
 supabase_key = os.environ.get("SUPABASE_KEY")
@@ -15,8 +14,14 @@ supabase: Client = create_client(supabase_url, supabase_key)
 client = Groq(api_key=GROQ_API_KEY)
 
 scraper = cloudscraper.create_scraper()
-# Anlık taze başlıklar için doğrudan 'bugün' akışına bakar
-target_url = "https://eksisozluk.com/basliklar/bugun"
+
+# Sırayla denenecek güncel Ekşi Sözlük akış URL'leri
+TARGET_URLS = [
+    "https://eksisozluk.com/basliklar/gundem",
+    "https://eksisozluk.com/basliklar/populer",
+    "https://eksisozluk1923.com/basliklar/gundem",
+    "https://eksisozluk.com"
+]
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -42,32 +47,40 @@ def turkish_title(text: str) -> str:
 
 def get_data_from_target_site():
     topic_list_repo = []
-    try:
-        response = scraper.get(target_url, headers=headers)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
-            topic_list = soup.find("ul", class_=lambda x: x and "topic-list" in x)
+    
+    for url in TARGET_URLS:
+        try:
+            print(f"🔗 Taranıyor: {url}")
+            response = scraper.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, "html.parser")
+                topic_list = soup.find("ul", class_=lambda x: x and "topic-list" in x)
 
-            if topic_list:
-                items = topic_list.find_all("li")
+                if topic_list:
+                    items = topic_list.find_all("li")
+                else:
+                    items = soup.select("#partials li a, ul.topic-list li a")
+
+                if items:
+                    for li in items:
+                        a_tag = li if li.name == "a" else li.find("a")
+                        if a_tag:
+                            small_tag = a_tag.find("small")
+                            if small_tag:
+                                small_tag.decompose()
+                            
+                            topic = a_tag.get_text(strip=True)
+                            if topic and topic not in topic_list_repo:
+                                topic_list_repo.append(topic)
+                    
+                    if topic_list_repo:
+                        print(f"✅ {len(topic_list_repo)} adet başlık başarıyla çekildi.")
+                        return topic_list_repo
             else:
-                items = soup.select("#partials li a, ul.topic-list li a")
+                print(f"⚠️ {url} yanıt vermedi (HTTP {response.status_code}), alternatif deneniyor...")
+        except Exception as e:
+            print(f"✕ Bağlantı hatası ({url}): {e}")
 
-            if items:
-                for li in items:
-                    a_tag = li if li.name == "a" else li.find("a")
-                    if a_tag:
-                        small_tag = a_tag.find("small")
-                        if small_tag:
-                            small_tag.decompose()
-                        
-                        topic = a_tag.get_text(strip=True)
-                        if topic and topic not in topic_list_repo:
-                            topic_list_repo.append(topic)
-        else:
-            print(f"Siteye erişilemedi. Hata Kodu: {response.status_code}")
-    except Exception as e:
-        print(f"Bağlantı hatası: {e}")
     return topic_list_repo
 
 def is_topic_already_saved(topic):
@@ -108,7 +121,7 @@ def get_unique_topic_from_groq(topic, retries=3):
             )
             raw_title = gen_response.choices[0].message.content.strip().replace('"', '')
 
-            # 2. Aşama: İki kez kontrol (Self-Correction & Türkçe İmla)
+            # 2. Aşama: Redaksiyon & Türkçe İmla Kontrolü
             verify_prompt = (
                 f"Orijinal Başlık: '{topic}'\n"
                 f"Üretilen Başlık: '{raw_title}'\n\n"
@@ -147,7 +160,7 @@ def save_to_supabase(original_topic, unique_topic):
         return False
 
 def trigger_bot_runner():
-    """Yeni başlık açılınca 30-50 botun yorum ve beğeni atmasını sağlar."""
+    """Yeni başlık açılınca botların yorum ve beğeni atmasını sağlar."""
     print("\n🤖 Yorum botları tetikleniyor (runner.ts)...")
     try:
         subprocess.run(["npm", "run", "bot:run"], check=True)
@@ -164,7 +177,6 @@ if __name__ == "__main__":
 
     found_new_topic = False
 
-    # Daha önce hiç işlenmemiş İLK başlığı bul, ekle ve botları tetikle
     for topic in raw_topics:
         if is_topic_already_saved(topic):
             continue
@@ -177,7 +189,7 @@ if __name__ == "__main__":
             if success:
                 found_new_topic = True
                 trigger_bot_runner()
-                break  # Sadece 1 yeni başlık ekleyip bu turu tamamla
+                break
 
     if not found_new_topic:
         print("ℹ️ Ekşi Sözlük'teki tüm güncel başlıklar zaten veritabanında mevcut. Yeni başlık bekleniyor.")
