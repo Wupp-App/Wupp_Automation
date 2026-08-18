@@ -5,11 +5,11 @@ const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
 const LOCAL_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:3b';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
-// 1. Yerel Ollama Çağrısı (GitHub Actions / Local)
+// 1. Yerel Ollama Çağrısı
 async function generateWithOllama(systemPrompt: string, userPrompt: string): Promise<string | null> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 sn timeout
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
 
     const response = await fetch(`${OLLAMA_HOST}/api/chat`, {
       method: 'POST',
@@ -23,28 +23,23 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
           { role: 'user', content: userPrompt },
         ],
         options: {
-          temperature: 0.75,
+          temperature: 0.85,
+          top_p: 0.9,
         },
       }),
     });
 
     clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const errText = await response.text();
-      console.warn(`[Ollama Uyarısı] HTTP ${response.status}: ${errText.slice(0, 100)}`);
-      return null;
-    }
+    if (!response.ok) return null;
 
     const data = await response.json();
-    const content = data?.message?.content?.trim();
-    return content || null;
-  } catch (err: any) {
-    return null; // Local veya Runner Ollama kapalıysa sessizce Groq/Gemini'ye geçer
+    return data?.message?.content?.trim() || null;
+  } catch {
+    return null;
   }
 }
 
-// 2. Groq Bulut API Çağrısı (Native Fetch)
+// 2. Groq Bulut API Çağrısı
 async function generateWithGroq(model: string, systemPrompt: string, userPrompt: string): Promise<string | null> {
   if (!GROQ_API_KEY) return null;
 
@@ -61,21 +56,16 @@ async function generateWithGroq(model: string, systemPrompt: string, userPrompt:
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.75,
+        temperature: 0.85,
+        top_p: 0.9,
       }),
     });
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      console.warn(`[Groq ${model} Hatası]: HTTP ${response.status} - ${errBody.slice(0, 120)}`);
-      return null;
-    }
+    if (!response.ok) return null;
 
     const data = await response.json();
-    const text = data?.choices?.[0]?.message?.content?.trim();
-    return text || null;
-  } catch (err: any) {
-    console.warn(`[Groq Bağlantı Hatası (${model})]:`, err?.message || err);
+    return data?.choices?.[0]?.message?.content?.trim() || null;
+  } catch {
     return null;
   }
 }
@@ -85,70 +75,72 @@ export async function generateEntry(
   persona: BotPersona,
   existingEntries: string[] = []
 ): Promise<string> {
-  // Rastgele 2 ile 5 cümle arası hedef
-  const sentenceTarget = Math.floor(Math.random() * (5 - 2 + 1)) + 2;
-
-  const variations = [
-    'kendi tecrübene dayanarak veya doğrudan bir örnek vererek anlat',
-    'durumu esprili veya hafif iğneleyici bir dille analiz et',
-    'net, dobra ve doğrudan konunun özüne parmak basan bir bakış açısı sergile',
-    'durumun arka planına veya toplumdaki yansımasına dikkat çek',
-  ];
-  const randomVariation = variations[Math.floor(Math.random() * variations.length)];
+  // Rastgele 2 ile 4 cümle arası hedef
+  const targetSentences = Math.floor(Math.random() * 3) + 2;
 
   const systemInstruction = `
-Sen "${persona.username}" kullanıcı adına sahip, Ekşi Sözlük / sosyal medya platformunda yazan gerçek bir insansın.
-Kişiliğin ve üslubun: ${persona.tone || persona.style || 'Samimi, gündelik ve doğal Türkçe'}
+Sen Ekşi Sözlük yazarı olan gerçek, sokaktaki bir insansın. Kullanıcı adın: "${persona.username}".
+Kişiliğin/Tavrın: ${persona.tone || persona.style || 'Gündelik, hafif kinayeli, net ve samimi'}.
 
-Yazım Kuralları:
-1. Türkçe yaz. Kesinlikle robotik veya ansiklopedik yazma.
-2. Gerçek bir sözlük yazarının gündelik tarzını benimse; ${randomVariation}.
-3. Asla "Merhaba", "Özetle", "Bence bu konu hakkında...", "Sonuç olarak" gibi kalıplar KULLANMA.
-4. Uzunluk: Tam olarak ${sentenceTarget} cümle kur.
-5. Başlık veya tırnak işareti koyma; sadece yazacağın entry metnini döndür.
+KESİN KURALLAR:
+1. ASLA felsefi, akademik, edebi, ansiklopedik veya edatlarla dolu cümleler kurma ("gösteren-gösterilen", "algı karmaşası", "kolektif hafıza", "altını çizmek", "bu başlık gösteriyor ki" gibi yapay zeka klişelerini yazarsan sistem çöker!).
+2. Konuşma diliyle, sokak Türkçesiyle veya gerçek bir sözlük yazarı gibi doğrudan konuya gir.
+3. Uzunluk: En az 2, en fazla 4 cümle olsun. Asla paragraf döktürme.
+4. Tırnak işareti, başlık tekrarı veya açıklama metni ekleme. Sadece entry'yi yaz.
+
+İYİ VE GERÇEKÇİ ÖRNEKLER:
+- Başlık: "istanbul trafiği" -> "her gün ömrümden iki saat çalan illet. metrobüse binmektense evde oturup duvara bakmayı tercih ederim bazen."
+- Başlık: "asgari ücret zammı" -> "markete gidip iki parça şey alana kadar çok iyi para gibi geliyordu. kasada yine gerçeğe tosladık."
+- Başlık: "fenerbahçe" -> "yine bir şekilde umutlandırıp sezon sonu kahredecekler bizi, adım gibi eminim."
 `;
 
   const contextPart =
     existingEntries.length > 0
-      ? `\nBaşlıktaki diğer bazı yazarların görüşleri:\n- ${existingEntries.slice(-3).join('\n- ')}`
+      ? `\nÖnceki yazarların bahsettiği bazı noktalar:\n- ${existingEntries.slice(-2).join('\n- ')}`
       : '';
 
-  const userPrompt = `Hakkında yorum yapacağın başlık: "${topicName}"${contextPart}\n\nEntry:`;
+  const userPrompt = `Yorum yazacağın başlık: "${topicName}"${contextPart}
 
-  // ── 1. ÖNCELİK: OLLAMA (GitHub Actions Runner veya Local) ──
-  const localText = await generateWithOllama(systemInstruction, userPrompt);
-  if (localText) {
-    console.log(`🦙 [Ollama: ${LOCAL_MODEL}] @${persona.username} yorum üretti.`);
-    return localText.replace(/^["']|["']$/g, '');
-  }
+Lütfen yukarıdaki kurallara uyarak tam ${targetSentences} cümlelik doğal ve samimi bir sözlük entry'si yaz:`;
 
-  // ── 2. YEDEK: BULUT GROQ API ──
-  const groqModels = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
-  for (const model of groqModels) {
-    const groqText = await generateWithGroq(model, systemInstruction, userPrompt);
-    if (groqText) {
-      console.log(`⚡ [Groq Fallback: ${model}] @${persona.username} yorum üretti.`);
-      return groqText.replace(/^["']|["']$/g, '');
+  // 1. Önce Ollama
+  let text = await generateWithOllama(systemInstruction, userPrompt);
+
+  // 2. Yedek Groq
+  if (!text) {
+    const groqModels = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+    for (const model of groqModels) {
+      text = await generateWithGroq(model, systemInstruction, userPrompt);
+      if (text) break;
     }
   }
 
-  // ── 3. SON ÇARE: GEMINI MODELLERİ ──
-  const geminiModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
-  for (const gModel of geminiModels) {
+  // 3. Yedek Gemini
+  if (!text) {
     try {
-      const model = genAI.getGenerativeModel({ model: gModel });
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       const result = await model.generateContent(`${systemInstruction}\n\n${userPrompt}`);
       const response = await result.response;
-      const text = response.text()?.trim();
-      if (text) {
-        console.log(`✨ [Gemini: ${gModel}] @${persona.username} yorum üretti.`);
-        return text.replace(/^["']|["']$/g, '');
-      }
-    } catch (geminiErr: any) {
-      console.warn(`[Gemini ${gModel} Hatası]:`, geminiErr?.message || geminiErr);
-    }
+      text = response.text()?.trim();
+    } catch {}
   }
 
-  console.error(`[AI Hatası] @${persona.username} için hiçbir AI kaynağından metin üretilemedi.`);
-  return '';
+  if (!text) {
+    console.error(`[AI Hatası] @${persona.username} için metin üretilemedi.`);
+    return '';
+  }
+
+  // Temizleme: Baştaki/sondaki tırnakları ve gereksiz boşlukları at
+  let cleanText = text
+    .replace(/^["'“”]+|["'“”]+$/g, '')
+    .replace(/^(entry:|yorum:)/i, '')
+    .trim();
+
+  // İlk harfi küçük yapma (Ekşi Sözlük stili doğallık için opsiyonel)
+  if (cleanText.length > 0 && Math.random() > 0.3) {
+    cleanText = cleanText.charAt(0).toLowerCase() + cleanText.slice(1);
+  }
+
+  console.log(`💬 [@${persona.username}]: "${cleanText}"`);
+  return cleanText;
 }
