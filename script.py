@@ -1,19 +1,30 @@
 import os
+import re
+import sys
 import time
-import subprocess
 import shutil
+import subprocess
+import json
+import urllib.request
 import cloudscraper
 from bs4 import BeautifulSoup
 from groq import Groq
 from supabase import create_client, Client
 from datetime import datetime, timezone
 
-supabase_url = os.environ.get("SUPABASE_URL")
-supabase_key = os.environ.get("SUPABASE_KEY")
+# Ortam Değişkenleri
+SUPABASE_URL = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
 
-supabase: Client = create_client(supabase_url, supabase_key)
-client = Groq(api_key=GROQ_API_KEY)
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("❌ HATA: Supabase URL veya KEY bulunamadı!")
+    sys.exit(1)
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 scraper = cloudscraper.create_scraper()
 
@@ -70,9 +81,11 @@ def get_data_from_target_site():
                             if small_tag:
                                 small_tag.decompose()
                             
-                            topic = a_tag.get_text(strip=True)
-                            if topic and topic not in topic_list_repo:
-                                topic_list_repo.append(topic)
+                            raw_text = a_tag.get_text(strip=True)
+                            # Sondaki entry sayısını temizle (örn: "başlık 45" -> "başlık")
+                            clean_topic = re.sub(r'\s+\d+$', '', raw_text).strip()
+                            if clean_topic and clean_topic not in topic_list_repo:
+                                topic_list_repo.append(clean_topic)
                     
                     if topic_list_repo:
                         print(f"✅ Toplam {len(topic_list_repo)} başlık çekildi.")
@@ -91,7 +104,55 @@ def get_already_saved_topics():
         print(f"Cache kontrol hatası: {e}")
         return set()
 
-def get_unique_topic_from_groq(topic, retries=2):
+def query_ollama(system_prompt: str, user_prompt: str) -> str | None:
+    """Yerel/Runner Ollama servisine HTTP üzerinden istek atar."""
+    try:
+        req_data = json.dumps({
+            "model": OLLAMA_MODEL,
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "options": {"temperature": 0.7}
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{OLLAMA_HOST}/api/chat",
+            data=req_data,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as res:
+            res_json = json.loads(res.read().decode())
+            text = res_json.get("message", {}).get("content", "").strip()
+            if text:
+                return text.strip('"\'')
+    except Exception:
+        pass
+    return None
+
+def query_groq(system_prompt: str, user_prompt: str, temperature=0.7) -> str | None:
+    """Groq API üzerinden hızlı yanıt alır."""
+    if not groq_client:
+        return None
+    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    for model in models:
+        try:
+            chat = groq_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=temperature
+            )
+            text = chat.choices[0].message.content.strip().strip('"\'')
+            if text:
+                return text
+        except Exception as e:
+            print(f"⚠️ Groq ({model}) hatası: {e}")
+    return None
+
+def get_unique_topic_from_ai(topic: str, retries=2) -> str:
     """Başlığı sözlük üslubuna çevirir ve Türkçe karakter kontrolü yapar."""
     system_prompt = (
         "Sen popüler Türk internet forumlarının kıdemli bir yazarısın. "
@@ -102,45 +163,36 @@ def get_unique_topic_from_groq(topic, retries=2):
         "3. Resmi veya haber dili kullanma; gündelik sözlük jargonu olsun."
     )
 
-    for attempt in range(retries):
-        try:
-            gen_response = client.chat.completions.create(
-                model="llama-3.1-70b-versatile",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Şu başlığı sözlük formatında yeniden yaz: '{topic}'"}
-                ],
-                temperature=0.7
-            )
-            raw_title = gen_response.choices[0].message.content.strip().replace('"', '')
+    user_prompt = f"Şu başlığı sözlük formatında yeniden yaz: '{topic}'"
 
-            verify_prompt = (
+    for _ in range(retries):
+        # 1. Önce Ollama dene
+        raw_title = query_ollama(system_prompt, user_prompt)
+        
+        # 2. Ollama yoksa Groq dene
+        if not raw_title:
+            raw_title = query_groq(system_prompt, user_prompt, temperature=0.7)
+
+        if raw_title:
+            verify_system = "Sen bir Türkçe redaktörüsün. Sadece temiz başlığı verirsin."
+            verify_user = (
                 f"Orijinal Başlık: '{topic}'\n"
                 f"Üretilen Başlık: '{raw_title}'\n\n"
                 "Bu üretilen başlık Türkçe dilbilgisi ve Türkçe karakterler açısından doğruysa sadece temiz halini yaz. "
                 "Değilse orijinal başlığı en temiz haliyle döndür. Başka hiçbir açıklama yazma."
             )
             
-            verify_response = client.chat.completions.create(
-                model="llama-3.1-70b-versatile",
-                messages=[
-                    {"role": "system", "content": "Sen bir Türkçe redaktörüsün. Sadece temiz başlığı verirsin."},
-                    {"role": "user", "content": verify_prompt}
-                ],
-                temperature=0.2
-            )
+            final_title = query_ollama(verify_system, verify_user)
+            if not final_title:
+                final_title = query_groq(verify_system, verify_user, temperature=0.2)
             
-            final_title = verify_response.choices[0].message.content.strip().replace('"', '')
             if final_title:
                 return turkish_title(final_title)
-
-        except Exception as e:
-            print(f"Groq API Hatası (Deneme {attempt + 1}): {e}")
-            time.sleep(1)
+            return turkish_title(raw_title)
 
     return turkish_title(topic)
 
-def save_to_supabase(original_topic, unique_topic):
+def save_to_supabase(original_topic: str, unique_topic: str) -> bool:
     try:
         supabase.table("topics").insert({"topic_name": unique_topic}).execute()
         supabase.table("weekly_topics").insert({"topic": original_topic}).execute()
@@ -154,18 +206,19 @@ def trigger_bot_runner():
     """Yeni eklenen başlık için TypeScript bot runner'ı tetikler."""
     print("\n🤖 Yorum botları tetikleniyor (runner.ts)...")
     npm_path = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
+    use_shell = os.name == "nt"  # Windows için True, Linux/macOS için False
     try:
-        subprocess.run([npm_path, "run", "bot:run"], shell=True, check=True)
+        subprocess.run([npm_path, "run", "bot:run"], shell=use_shell, check=True)
     except Exception as e:
         print(f"Bot runner çalıştırma hatası: {e}")
 
 if __name__ == "__main__":
-    print(f"🔍 Güncel sözlük başlıkları taranıyor...")
+    print("🔍 Güncel sözlük başlıkları taranıyor...")
     raw_topics = get_data_from_target_site()
     
     if not raw_topics:
         print("İncelenecek başlık bulunamadı.")
-        exit()
+        sys.exit(0)
 
     saved_cache = get_already_saved_topics()
     found_new_topic = False
@@ -176,7 +229,7 @@ if __name__ == "__main__":
             continue
         
         print(f"\n📌 Yeni taze başlık yakalandı: {topic}")
-        unique_topic = get_unique_topic_from_groq(topic)
+        unique_topic = get_unique_topic_from_ai(topic)
         
         if unique_topic:
             success = save_to_supabase(topic, unique_topic)
