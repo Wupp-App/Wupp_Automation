@@ -109,9 +109,9 @@ def get_unique_topic_from_ai(topic: str) -> str:
                 continue
     return turkish_title(topic)
 
-def save_and_run_entry_bots(original_topic: str, unique_topic: str) -> bool:
+def save_and_run(original_topic: str, unique_topic: str) -> bool:
     try:
-        # topics tablosuna başlığı ekle ve topic_id değerini al
+        # 1. topics tablosuna ekle
         res = supabase.table("topics").insert({"topic_name": unique_topic}).execute()
         created_row = res.data[0] if res.data else None
         
@@ -119,17 +119,17 @@ def save_and_run_entry_bots(original_topic: str, unique_topic: str) -> bool:
             print("✕ Başlık DB'ye eklendi ancak topic_id geri alınamadı.")
             return False
 
-        topic_id = created_row.get("topic_id")
+        topic_id = str(created_row.get("topic_id"))
         supabase.table("weekly_topics").insert({"topic": original_topic}).execute()
         print(f"✅ Yeni başlık DB'ye yazıldı: #{unique_topic} (topic_id: {topic_id})")
 
-        # runner.ts'e parametre olarak topic_id ve unique_topic aktarılır
+        # 2. runner.ts doğrudan npx tsx ile ve parametrelerle çağrılır
         print(f"\n🤖 #{unique_topic} başlığı için yorum botları başlatılıyor...")
-        npm_path = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
+        npx_path = shutil.which("npx") or shutil.which("npx.cmd") or "npx"
         use_shell = os.name == "nt"
 
         subprocess.run(
-            [npm_path, "run", "bot:run", "--", str(topic_id), str(unique_topic)],
+            [npx_path, "tsx", "scripts/bot/runner.ts", topic_id, unique_topic],
             shell=use_shell,
             check=True
         )
@@ -139,7 +139,7 @@ def save_and_run_entry_bots(original_topic: str, unique_topic: str) -> bool:
         return False
 
 if __name__ == "__main__":
-    print("🔍 Güncel Ekşi Sözlük başlıkları taranıyor...")
+    print("🔍 Ekşi Sözlük başlıkları taranıyor...")
     raw_topics = get_data_from_target_site()
 
     if not raw_topics:
@@ -156,10 +156,10 @@ if __name__ == "__main__":
         print(f"\n📌 Yeni taze başlık yakalandı: {topic}")
         unique_topic = get_unique_topic_from_ai(topic)
 
-        # Başlığı veritabanına kaydet ve o başlığa ait entry döngüsünü başlat
-        if save_and_run_entry_bots(topic, unique_topic):
+        # Başlığı sadece script.py ekler ve entry botunu tek sefer çalıştırır
+        if save_and_run(topic, unique_topic):
             processed = True
-            break  # Saatte sadece 1 yeni başlık işlenir
+            break  # Saatte sadece 1 taze başlık işlenir
 
     if not processed:
-        print("\nℹ️ Tüm güncel başlıklar zaten işlenmiş.")
+        print("\nℹ️ Tüm güncel başlıklar zaten eklenmiş.")
