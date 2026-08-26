@@ -17,19 +17,19 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function runBotFlow() {
-  // script.py'den gelen topic_id ve topic_name argümanları
+  // script.py'den gelen topic_id ve topic_name parametreleri
   const args = process.argv.slice(2);
   const targetTopicId = args[0] ? parseInt(args[0], 10) : null;
   const targetTopicName = args.slice(1).join(' ') || null;
 
   if (!targetTopicId || !targetTopicName) {
-    console.error('❌ Hata: runner.ts çağrılırken topic_id ve topic_name parametreleri verilmedi!');
+    console.error('❌ Hata: runner.ts çağrılırken topic_id veya topic_name verilmedi! Bu dosya tek başına çalıştırılamaz.');
     process.exit(1);
   }
 
-  console.log(`🎯 Hedef Başlık Kilitlendi: #${targetTopicName} (topic_id: ${targetTopicId})`);
+  console.log(`🎯 Hedef Başlık Alındı: #${targetTopicName} (topic_id: ${targetTopicId})`);
 
-  // Mevcut entry'leri bağlam (context) olarak çek
+  // Mevcut entry'leri bağlam (context) olarak al
   const { data: existingEntriesData } = await supabase
     .from('entries')
     .select('entry')
@@ -39,12 +39,12 @@ async function runBotFlow() {
 
   const contextEntries: string[] = existingEntriesData?.map((e) => e.entry) || [];
 
-  // 10 ile 40 arasında rastgele bot adedi seç
+  // 10 ile 40 arasında rastgele bot seç
   const targetBotCount = Math.floor(Math.random() * (40 - 10 + 1)) + 10;
   const shuffledBots = [...BOT_PERSONAS].sort(() => 0.5 - Math.random());
   const selectedBots: BotPersona[] = shuffledBots.slice(0, Math.min(targetBotCount, shuffledBots.length));
 
-  console.log(`📋 Bu başlığa toplam ${selectedBots.length} bot sırayla entry yazacak.\n`);
+  console.log(`📋 Bu başlığa toplam ${selectedBots.length} bot sırayla entry girecek.\n`);
 
   for (let i = 0; i < selectedBots.length; i++) {
     const bot = selectedBots[i];
@@ -57,14 +57,14 @@ async function runBotFlow() {
       .maybeSingle();
 
     if (!profile) {
-      console.warn(`⚠️ @${bot.username} profili profiles tablosunda bulunamadı, geçiliyor.`);
+      console.warn(`⚠️ @${bot.username} profili bulunamadı, geçiliyor.`);
       continue;
     }
 
-    // AI API zinciri ile entry üret
+    // AI API zincirinden entry üretimi
     const generatedText = await generateEntry(targetTopicName, bot, contextEntries);
 
-    // Entry kaydı (entries tablosunun topic_id ve user_id sütunlarına)
+    // Entry kaydı (entries tablosuna)
     const { data: newEntry, error: insertError } = await supabase
       .from('entries')
       .insert({
@@ -77,13 +77,13 @@ async function runBotFlow() {
       .single();
 
     if (insertError) {
-      console.error(`✕ @${bot.username} entry eklenemedi:`, insertError.message);
+      console.error(`✕ Entry eklenemedi (@${bot.username}):`, insertError.message);
     } else {
       console.log(`✅ [${i + 1}/${selectedBots.length}] @${bot.username}: "${generatedText}"`);
       contextEntries.push(generatedText);
     }
 
-    // API kotalarını korumak için 12-20 sn bekleme
+    // API kota ve rate-limit koruması: her entry arası 12-20 sn bekleme
     if (i < selectedBots.length - 1) {
       const waitTimeSec = Math.floor(Math.random() * (20 - 12 + 1)) + 12;
       console.log(`⏳ Kota koruması için ${waitTimeSec} sn bekleniyor...\n`);
@@ -91,7 +91,7 @@ async function runBotFlow() {
     }
   }
 
-  console.log(`\n🎉 #${targetTopicName} başlığına ait ${selectedBots.length} yorum başarıyla tamamlandı!`);
+  console.log(`\n🎉 #${targetTopicName} başlığına ait ${selectedBots.length} entry başarıyla tamamlandı!`);
 }
 
 runBotFlow();
