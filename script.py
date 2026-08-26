@@ -1,10 +1,8 @@
 import os
 import re
 import sys
-import json
 import shutil
 import subprocess
-import urllib.request
 from datetime import datetime, timezone
 import cloudscraper
 from bs4 import BeautifulSoup
@@ -14,8 +12,6 @@ from supabase import create_client, Client
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("❌ HATA: Supabase URL veya KEY bulunamadı!")
@@ -113,27 +109,37 @@ def get_unique_topic_from_ai(topic: str) -> str:
                 continue
     return turkish_title(topic)
 
-def save_to_supabase(original_topic: str, unique_topic: str) -> bool:
+def save_and_trigger(original_topic: str, unique_topic: str):
     try:
-        supabase.table("topics").insert({"topic_name": unique_topic}).execute()
+        # 1. Başlığı DB'ye ekle ve topic_id'yi geri al
+        res = supabase.table("topics").insert({"topic_name": unique_topic}).execute()
+        created_row = res.data[0] if res.data else None
+        
+        if not created_row:
+            print("✕ Başlık oluşturuldu fakat ID alınamadı.")
+            return False
+
+        topic_id = created_row.get("topic_id")
         supabase.table("weekly_topics").insert({"topic": original_topic}).execute()
-        print(f"✅ Yeni taze başlık DB'ye yazıldı: '{original_topic}' -> #{unique_topic}")
+        print(f"✅ Yeni başlık DB'ye mühürlendi: #{unique_topic} (ID: {topic_id})")
+
+        # 2. runner.ts'e sadece bu başlığı paslayarak tetikle
+        print(f"\n🤖 #{unique_topic} başlığı için yorum botları başlatılıyor...")
+        npm_path = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
+        use_shell = os.name == "nt"
+
+        subprocess.run(
+            [npm_path, "run", "bot:run", "--", str(topic_id), str(unique_topic)],
+            shell=use_shell,
+            check=True
+        )
         return True
     except Exception as e:
-        print(f"✕ Supabase kayıt hatası: {e}")
+        print(f"✕ İşlem hatası: {e}")
         return False
 
-def trigger_bot_runner():
-    print("\n🤖 Yorum botları sırayla başlatılıyor (runner.ts)...")
-    npm_path = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
-    use_shell = os.name == "nt"
-    try:
-        subprocess.run([npm_path, "run", "bot:run"], shell=use_shell, check=True)
-    except Exception as e:
-        print(f"Bot runner çalıştırma hatası: {e}")
-
 if __name__ == "__main__":
-    print("🔍 Güncel Ekşi Sözlük başlıkları taranıyor...")
+    print("🔍 Ekşi Sözlük başlıkları taranıyor...")
     raw_topics = get_data_from_target_site()
 
     if not raw_topics:
@@ -150,8 +156,8 @@ if __name__ == "__main__":
         print(f"\n📌 Yeni taze başlık yakalandı: {topic}")
         unique_topic = get_unique_topic_from_ai(topic)
 
-        if save_to_supabase(topic, unique_topic):
-            trigger_bot_runner()  # Botların 10-40 yorumu bitirmesini senkron olarak bekler
+        # Başlığı sadece burada açıp, runner'a gönderiyoruz
+        if save_and_trigger(topic, unique_topic):
             processed = True
             break  # Saatte sadece 1 yeni başlık işlenir
 
