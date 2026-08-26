@@ -8,11 +8,36 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
+// Yarım kalan cümleleri tespit edip temizleyen fonksiyon
+function fixIncompleteSentence(text: string): string {
+  let cleaned = text.trim();
+  if (!cleaned) return cleaned;
+
+  const validEndings = ['.', '!', '?', '...'];
+  const hasValidEnding = validEndings.some(ending => cleaned.endsWith(ending));
+
+  if (!hasValidEnding) {
+    const lastPunctuation = Math.max(
+      cleaned.lastIndexOf('.'),
+      cleaned.lastIndexOf('!'),
+      cleaned.lastIndexOf('?'),
+      cleaned.lastIndexOf('...')
+    );
+
+    if (lastPunctuation > 15) {
+      cleaned = cleaned.substring(0, lastPunctuation + 1).trim();
+    } else {
+      cleaned = cleaned + '.';
+    }
+  }
+  return cleaned;
+}
+
 async function generateWithGroq(model: string, systemPrompt: string, userPrompt: string): Promise<string | null> {
   if (!GROQ_API_KEY) return null;
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
 
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -27,8 +52,8 @@ async function generateWithGroq(model: string, systemPrompt: string, userPrompt:
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.95, // Doğallık ve yaratıcılık için artırıldı
-        max_tokens: 180,
+        temperature: 0.95,
+        max_tokens: 450, // Kesintiyi önlemek için genişletildi
       }),
     });
 
@@ -46,7 +71,7 @@ async function generateWithGemini(modelName: string, systemPrompt: string, userP
   try {
     const model = genAI.getGenerativeModel({
       model: modelName,
-      generationConfig: { temperature: 0.95 }
+      generationConfig: { temperature: 0.95, maxOutputTokens: 450 }
     });
     const result = await model.generateContent(`${systemPrompt}\n\n${userPrompt}`);
     const response = await result.response;
@@ -72,7 +97,7 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        options: { temperature: 0.95, num_predict: 90 },
+        options: { temperature: 0.95, num_predict: 180 },
       }),
     });
 
@@ -87,18 +112,17 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
 
 function getFallbackEntry(sentenceCount: number): string {
   const shortPool = [
-    `valla ne desek boş, olan yine bize oluyor amk.`,
-    `şaşırma eşiğimizi kaybedeli çok oldu ya.`,
+    `valla ne desek boş, olan yine bize oluyor.`,
+    `şaşırma eşiğimizi kaybedeli çok oldu.`,
     `tam bir türkiye simülasyonu özeti.`,
-    `klasik algı operasyonu, yemezler.`,
-    `gülüp geçilmesi gereken bomboş bir mevzu.`
+    `klasik algı operasyonu, kimse yemez.`
   ];
   const mediumPool = [
-    `haberi ilk gördüğümde şaşırmıştım ama sonra durup düşününce gayet normal geldi. şaşırma eşiğimizi çoktan kaybettik maalesef.`,
-    `uzun uzun analiz kasmaya gerek yok bence. sonu baştan belli olan klasik bir saçmalık işte.`
+    `haberi ilk gördüğümde şaşırmıştım ama sonra durup düşününce gayet normal geldi. şaşırma eşiğimizi çoktan kaybettik.`,
+    `uzun uzun analiz kasmaya gerek yok. sonu baştan belli olan klasik bir mevzu.`
   ];
   const longPool = [
-    `zamanında çok konuşulup tartışılmıştı ama hala aynı yerde sayıyoruz. değişen hiçbir şey yok. herkes bir şeyler sıkıyor da kimsenin işin aslına baktığı yok. yine boş bir tantanayla oyalanıyoruz.`
+    `zamanında çok konuşulup tartışılmıştı ama hala aynı yerde sayıyoruz. değişen hiçbir şey yok. herkes bir şeyler anlatıyor da kimsenin işin aslına baktığı yok. yine boş bir gündemle oyalanıyoruz.`
   ];
 
   if (sentenceCount === 1) return shortPool[Math.floor(Math.random() * shortPool.length)];
@@ -111,73 +135,67 @@ export async function generateEntry(
   persona: BotPersona,
   existingEntries: string[] = []
 ): Promise<string> {
-  // 1 ile 4 arasında rastgele hedef cümle sayısı
+  // 1 ile 4 arasında rastgele cümle hedefi
   const sentenceTarget = Math.floor(Math.random() * 4) + 1;
 
   const systemInstruction = `
-Sen Ekşi Sözlük'te entry yazan gerçek bir insansın. Kullanıcı adın: "${persona.username}".
-Kişiliğin/Tavrın: ${persona.tone}.
+Sen Ekşi Sözlük'te entry yazan gerçek bir Türk kullanıcısısın. Kullanıcı adın: "${persona.username}".
+Tavrın: ${persona.tone}.
 
-KESİNLİKLE YASAKLI OLAN ŞEYLER (AI GİBİ DURAN HER ŞEY):
-- "Özetle", "Sonuç olarak", "Bence bu durum", "Kayda değer", "Prestijli", "Strateji", "Gözler önüne sermektedir", "Altını çizmek gerekir".
-- Resmi makale dili, köşe yazarı üslubu, haber spikeri veya Wikipedia anlatımı KESİNLİKLE YASAK.
-- Tırnak işareti (""), başlık tekrarı, liste veya maddeleme işareti KULLANMA.
+YASAKLAR (ROBOTİK VE YAPAY ZEKA KOKAN KALIPLAR):
+- "özetle", "sonuç olarak", "bu durum göstermektedir", "kayda değer", "altını çizmek gerekir", "bence bu olay".
+- Resmi makale dili, köşe yazısı jargonu veya ansiklopedik bülten dili KESİNLİKLE YASAKTIR.
+- Başlık tekrarı ve tırnak işareti ("") kullanma.
 
-NASIL YAZACAKSIN (İNSAN GİBİ):
-1. Tam bir sözlük yazarı gibi konuş; rahat, sokak ağzıyla, bazen alaycı, bazen bezmiş, bazen dobra.
-2. Noktalamayı ve büyük harfleri aşırı kuralcı kullanma. Gerçek insanlar gibi yaz.
-3. KESİNLİKLE tam ${sentenceTarget} cümle yaz. Ne 1 eksik ne 1 fazla.
+KURALLAR:
+1. Tam bir sözlük yazarı gibi rahat, gündelik, samimi, alaycı ya da bezmiş bir üslupla yaz.
+2. Tam ${sentenceTarget} adet eksiksiz ve bitmiş cümle yaz.
+3. Cümleyi asla yarım bırakma, sonuna mutlaka uygun noktalama işareti koy.
 `;
 
   const contextPart = existingEntries.length > 0
     ? `\nÖnceki yazarların dedikleri:\n- ${existingEntries.slice(-2).join('\n- ')}`
     : '';
 
-  const userPrompt = `Başlık: "${topicName}"${contextPart}\n\nBu başlığa tam ${sentenceTarget} cümlelik doğal bir sözlük yorumu patlat:`;
+  const userPrompt = `Başlık: "${topicName}"${contextPart}\n\nBu başlığa tam ${sentenceTarget} cümlelik doğal sözlük entry'si yaz:`;
 
   let text: string | null = null;
 
-  // 1. Groq
+  // 1. Groq Modelleri
   const groqModels = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'];
   for (const model of groqModels) {
     text = await generateWithGroq(model, systemInstruction, userPrompt);
-    if (text) {
-      console.log(`⚡ [Groq: ${model}] @${persona.username} (${sentenceTarget} cümle) yazdı.`);
-      break;
-    }
+    if (text) break;
   }
 
-  // 2. Gemini
+  // 2. Gemini Modelleri
   if (!text) {
     const geminiModels = ['gemini-2.5-flash', 'gemini-1.5-flash'];
     for (const gModel of geminiModels) {
       text = await generateWithGemini(gModel, systemInstruction, userPrompt);
-      if (text) {
-        console.log(`✨ [Gemini: ${gModel}] @${persona.username} (${sentenceTarget} cümle) yazdı.`);
-        break;
-      }
+      if (text) break;
     }
   }
 
   // 3. Ollama
   if (!text) {
     text = await generateWithOllama(systemInstruction, userPrompt);
-    if (text) console.log(`🦙 [Ollama: ${LOCAL_MODEL}] @${persona.username} (${sentenceTarget} cümle) yazdı.`);
   }
 
   // 4. Fallback
   if (!text) {
-    console.warn(`🛡️ [Fallback] @${persona.username} için ${sentenceTarget} cümlelik şablon kullanıldı.`);
     text = getFallbackEntry(sentenceTarget);
   }
 
-  // Metin temizleme ve insanlaştırma filtreleri
+  // Temizleme ve yarım cümle onarma filtresi
   let cleanText = text
     .replace(/^["'“”«»]+|["'“”«»]+$/g, '')
     .replace(/^(entry:|yorum:|cevap:)/i, '')
     .trim();
 
-  // %75 ihtimalle ilk harfi küçük başlat (Sözlük jargonu gereği gerçek insan dokunuşu)
+  cleanText = fixIncompleteSentence(cleanText);
+
+  // Doğallık katmak için sözlük yazarları gibi %75 ihtimalle küçük harfle başlat
   if (cleanText.length > 0 && Math.random() > 0.25) {
     cleanText = cleanText.charAt(0).toLowerCase() + cleanText.slice(1);
   }
