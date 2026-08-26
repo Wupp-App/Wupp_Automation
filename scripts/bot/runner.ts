@@ -19,28 +19,17 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function runBotFlow() {
   // script.py'den gelen topic_id ve topic_name argümanları
   const args = process.argv.slice(2);
-  let targetTopicId: string | number | null = args[0] || null;
-  let targetTopicName: string | null = args.slice(1).join(' ') || null;
+  const targetTopicId = args[0] ? parseInt(args[0], 10) : null;
+  const targetTopicName = args.slice(1).join(' ') || null;
 
-  // Eğer parametre verilmediyse DB'deki son başlığı çek
   if (!targetTopicId || !targetTopicName) {
-    const { data: topics, error } = await supabase
-      .from('topics')
-      .select('topic_id, topic_name')
-      .order('created_at', { ascending: false })
-      .limit(1);
-
-    if (error || !topics || topics.length === 0) {
-      console.error('❌ İşlenecek başlık bulunamadı.');
-      return;
-    }
-    targetTopicId = topics[0].topic_id;
-    targetTopicName = topics[0].topic_name;
+    console.error('❌ Hata: runner.ts çağrılırken topic_id ve topic_name parametreleri verilmedi!');
+    process.exit(1);
   }
 
-  console.log(`🎯 Hedef Başlık: #${targetTopicName} (ID: ${targetTopicId})`);
+  console.log(`🎯 Hedef Başlık Kilitlendi: #${targetTopicName} (topic_id: ${targetTopicId})`);
 
-  // Mevcut entry'leri bağlam (context) olarak al
+  // Mevcut entry'leri bağlam (context) olarak çek
   const { data: existingEntriesData } = await supabase
     .from('entries')
     .select('entry')
@@ -50,16 +39,16 @@ async function runBotFlow() {
 
   const contextEntries: string[] = existingEntriesData?.map((e) => e.entry) || [];
 
-  // 10 ile 40 arasında rastgele sayıda bot seç
+  // 10 ile 40 arasında rastgele bot adedi seç
   const targetBotCount = Math.floor(Math.random() * (40 - 10 + 1)) + 10;
-  const shuffledPersonas = [...BOT_PERSONAS].sort(() => 0.5 - Math.random());
-  const selectedBots: BotPersona[] = shuffledPersonas.slice(0, Math.min(targetBotCount, shuffledPersonas.length));
+  const shuffledBots = [...BOT_PERSONAS].sort(() => 0.5 - Math.random());
+  const selectedBots: BotPersona[] = shuffledBots.slice(0, Math.min(targetBotCount, shuffledBots.length));
 
-  console.log(`👉 Toplam ${selectedBots.length} bot sırayla entry girecek.\n`);
+  console.log(`📋 Bu başlığa toplam ${selectedBots.length} bot sırayla entry yazacak.\n`);
 
   for (let i = 0; i < selectedBots.length; i++) {
     const bot = selectedBots[i];
-    console.log(`✍️ [${i + 1}/${selectedBots.length}] @${bot.username} hazırlanıyor...`);
+    console.log(`✍️ [${i + 1}/${selectedBots.length}] @${bot.username} sıraya girdi...`);
 
     const { data: profile } = await supabase
       .from('profiles')
@@ -68,12 +57,14 @@ async function runBotFlow() {
       .maybeSingle();
 
     if (!profile) {
-      console.warn(`⚠️ @${bot.username} profili bulunamadı, geçiliyor.`);
+      console.warn(`⚠️ @${bot.username} profili profiles tablosunda bulunamadı, geçiliyor.`);
       continue;
     }
 
-    const generatedText = await generateEntry(targetTopicName!, bot, contextEntries);
+    // AI API zinciri ile entry üret
+    const generatedText = await generateEntry(targetTopicName, bot, contextEntries);
 
+    // Entry kaydı (entries tablosunun topic_id ve user_id sütunlarına)
     const { data: newEntry, error: insertError } = await supabase
       .from('entries')
       .insert({
@@ -82,17 +73,17 @@ async function runBotFlow() {
         entry: generatedText,
         likes: Math.floor(Math.random() * 12) + 1,
       })
-      .select()
+      .select('id')
       .single();
 
     if (insertError) {
-      console.error(`✕ Entry ekleme hatası (@${bot.username}):`, insertError.message);
+      console.error(`✕ @${bot.username} entry eklenemedi:`, insertError.message);
     } else {
       console.log(`✅ [${i + 1}/${selectedBots.length}] @${bot.username}: "${generatedText}"`);
       contextEntries.push(generatedText);
     }
 
-    // Rate-limit ve kota koruması için her entry arasına 12-20 sn bekleme
+    // API kotalarını korumak için 12-20 sn bekleme
     if (i < selectedBots.length - 1) {
       const waitTimeSec = Math.floor(Math.random() * (20 - 12 + 1)) + 12;
       console.log(`⏳ Kota koruması için ${waitTimeSec} sn bekleniyor...\n`);
