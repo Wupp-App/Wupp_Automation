@@ -42,15 +42,13 @@ headers = {
 def turkish_title(text: str) -> str:
     upper_map = {"i": "İ", "ı": "I"}
     words = text.split()
-    formatted_words = []
-    for word in words:
-        if not word:
+    formatted = []
+    for w in words:
+        if not w:
             continue
-        first_char = word[0]
-        rest = word[1:]
-        first_upper = upper_map.get(first_char, first_char.upper())
-        formatted_words.append(first_upper + rest)
-    return " ".join(formatted_words)
+        first_upper = upper_map.get(w[0], w[0].upper())
+        formatted.append(first_upper + w[1:])
+    return " ".join(formatted)
 
 def get_data_from_target_site():
     topic_list_repo = []
@@ -74,7 +72,6 @@ def get_data_from_target_site():
                         if clean_topic and clean_topic not in topic_list_repo:
                             topic_list_repo.append(clean_topic)
                 if topic_list_repo:
-                    print(f"✅ {len(topic_list_repo)} potansiyel başlık çekildi.")
                     return topic_list_repo
         except Exception as e:
             print(f"✕ Bağlantı hatası ({url}): {e}")
@@ -88,75 +85,46 @@ def get_already_saved_topics():
         print(f"Cache kontrol hatası: {e}")
         return set()
 
-def query_groq(system_prompt: str, user_prompt: str) -> str | None:
-    if not groq_client:
-        return None
-    for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"]:
-        try:
-            chat = groq_client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.7
-            )
-            text = chat.choices[0].message.content.strip().strip('"\'')
-            if text:
-                return text
-        except Exception:
-            continue
-    return None
-
-def query_ollama(system_prompt: str, user_prompt: str) -> str | None:
-    try:
-        req_data = json.dumps({
-            "model": OLLAMA_MODEL,
-            "stream": False,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "options": {"temperature": 0.7}
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            f"{OLLAMA_HOST}/api/chat",
-            data=req_data,
-            headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=15) as res:
-            res_json = json.loads(res.read().decode())
-            text = res_json.get("message", {}).get("content", "").strip()
-            if text:
-                return text.strip('"\'')
-    except Exception:
-        pass
-    return None
-
 def get_unique_topic_from_ai(topic: str) -> str:
     system_prompt = (
         "Sen popüler Türk internet forumlarının kıdemli bir yazarısın. "
-        "Görevin verilen gündem başlığını, anlamını bozmadan samimi ve akıcı bir Türkçe sözlük başlığına çevirmektir.\n"
+        "Görevin verilen gündem başlığını anlamını bozmadan samimi ve akıcı bir Türkçe sözlük başlığına çevirmektir.\n"
         "1. Asla açıklama yapma. SADECE başlık metnini döndür.\n"
         "2. Türkçe karakterleri doğru kullan.\n"
-        "3. Resmi veya haber dili kullanma."
+        "3. Resmi haber dili kullanma."
     )
     user_prompt = f"Şu başlığı sözlük formatında yeniden yaz: '{topic}'"
-    raw_title = query_groq(system_prompt, user_prompt) or query_ollama(system_prompt, user_prompt)
-    return turkish_title(raw_title if raw_title else topic)
+    
+    if groq_client:
+        for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+            try:
+                chat = groq_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.7
+                )
+                text = chat.choices[0].message.content.strip().strip('"\'')
+                if text:
+                    return turkish_title(text)
+            except Exception:
+                continue
+    return turkish_title(topic)
 
 def save_to_supabase(original_topic: str, unique_topic: str) -> bool:
     try:
         supabase.table("topics").insert({"topic_name": unique_topic}).execute()
         supabase.table("weekly_topics").insert({"topic": original_topic}).execute()
-        print(f"✅ Yeni başlık veritabanına eklendi: '{original_topic}' -> #{unique_topic}")
+        print(f"✅ Yeni taze başlık DB'ye yazıldı: '{original_topic}' -> #{unique_topic}")
         return True
     except Exception as e:
         print(f"✕ Supabase kayıt hatası: {e}")
         return False
 
 def trigger_bot_runner():
-    print("\n🤖 Botlar başlatılıyor (runner.ts)...")
+    print("\n🤖 Yorum botları sırayla başlatılıyor (runner.ts)...")
     npm_path = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
     use_shell = os.name == "nt"
     try:
@@ -165,7 +133,7 @@ def trigger_bot_runner():
         print(f"Bot runner çalıştırma hatası: {e}")
 
 if __name__ == "__main__":
-    print("🔍 Ekşi Sözlük başlıkları taranıyor...")
+    print("🔍 Güncel Ekşi Sözlük başlıkları taranıyor...")
     raw_topics = get_data_from_target_site()
 
     if not raw_topics:
@@ -173,22 +141,19 @@ if __name__ == "__main__":
         sys.exit(0)
 
     saved_cache = get_already_saved_topics()
-    found_new_topic = False
+    processed = False
 
     for topic in raw_topics:
         if topic.strip().lower() in saved_cache:
             continue
 
-        print(f"\n📌 Yeni taze başlık bulundu: {topic}")
+        print(f"\n📌 Yeni taze başlık yakalandı: {topic}")
         unique_topic = get_unique_topic_from_ai(topic)
 
-        if unique_topic:
-            if save_to_supabase(topic, unique_topic):
-                found_new_topic = True
-                trigger_bot_runner()
-                break  # Saatte sadece 1 taze başlık işlenir
+        if save_to_supabase(topic, unique_topic):
+            trigger_bot_runner()  # Botların 10-40 yorumu bitirmesini senkron olarak bekler
+            processed = True
+            break  # Saatte sadece 1 yeni başlık işlenir
 
-    if not found_new_topic:
-        print("\nℹ️ Tüm güncel başlıklar zaten eklenmiş. Yeni başlık bekleniyor.")
-
-    print("\n🏁 Tur tamamlandı.")
+    if not processed:
+        print("\nℹ️ Tüm popüler başlıklar zaten eklenmiş.")
