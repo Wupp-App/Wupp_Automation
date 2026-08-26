@@ -23,7 +23,12 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 scraper = cloudscraper.create_scraper()
 
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-CACHE_FILE = "scraped_cache.json"
+
+# Cache dosyasını script'in bulunduğu klasöre sabitliyoruz.
+# Böylece script farklı bir çalışma dizininden (cron, farklı servis vs.)
+# tetiklense bile her zaman aynı dosyayı okur/yazar.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE_FILE = os.path.join(SCRIPT_DIR, "scraped_cache.json")
 
 TARGET_URLS = [
     f"https://eksisozluk.com/basliklar/tarih/{TODAY_STR}",
@@ -37,12 +42,14 @@ headers = {
     "Accept-Language": "tr,tr-TR;q=0.9,en-US;q=0.8,en;q=0.7"
 }
 
+
 def normalize_text(text: str) -> str:
     """Türkçe karakterleri ve noktalamaları arındırarak tekilleştirme anahtarı oluşturur."""
     tr_map = str.maketrans("İIĞÜŞÖÇâîû", "iıgüşöçaiu")
     clean = text.translate(tr_map).lower()
     clean = re.sub(r"[^\w\s]", "", clean)
     return re.sub(r"\s+", " ", clean).strip()
+
 
 def turkish_title(text: str) -> str:
     upper_map = {"i": "İ", "ı": "I"}
@@ -55,18 +62,19 @@ def turkish_title(text: str) -> str:
         formatted.append(first_upper + w[1:])
     return " ".join(formatted)
 
+
 def load_scraped_cache() -> dict:
     """Ekşi Sözlük'ten çekilen başlıkların tutulduğu günlük yerel JSON cache'i yükler."""
     if os.path.exists(CACHE_FILE):
         try:
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Eğer kayıt bugüne aitse cache'i döndür, dününse sıfırla
                 if data.get("date") == TODAY_STR:
                     return data
         except Exception:
             pass
     return {"date": TODAY_STR, "topics": []}
+
 
 def save_to_scraped_cache(raw_topic: str):
     """Çekilen orijinal Ekşi Sözlük başlığını günlük JSON dosyasına işler."""
@@ -76,6 +84,32 @@ def save_to_scraped_cache(raw_topic: str):
         data["topics"].append(norm)
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def get_today_topics_from_db() -> set:
+    """
+    Yerel cache dosyasına ek olarak (ve onun tek başına yeterli/güvenilir
+    olmadığı durumlara karşı) Supabase'deki 'topics' tablosunda bugün
+    eklenmiş başlıkları da çekip normalize edilmiş bir set olarak döner.
+    Bu sayede cache dosyası silinse/sıfırlansa bile aynı başlık tekrar işlenmez.
+    """
+    db_topics = set()
+    try:
+        start_of_day = f"{TODAY_STR}T00:00:00+00:00"
+        res = (
+            supabase.table("topics")
+            .select("topic_name, created_at")
+            .gte("created_at", start_of_day)
+            .execute()
+        )
+        for row in res.data or []:
+            name = row.get("topic_name", "")
+            if name:
+                db_topics.add(normalize_text(name))
+    except Exception as e:
+        print(f"⚠️ DB'den bugünkü başlıklar çekilemedi (sadece local cache kullanılacak): {e}")
+    return db_topics
+
 
 def get_data_from_target_site():
     topic_list_repo = []
@@ -87,7 +121,7 @@ def get_data_from_target_site():
                 soup = BeautifulSoup(response.text, "html.parser")
                 topic_list = soup.find("ul", class_=lambda x: x and "topic-list" in x)
                 items = topic_list.find_all("li") if topic_list else soup.select("#partials li a, ul.topic-list li a")
-                
+
                 for li in items:
                     a_tag = li if li.name == "a" else li.find("a")
                     if a_tag:
@@ -104,6 +138,7 @@ def get_data_from_target_site():
             print(f"✕ Bağlantı hatası ({url}): {e}")
     return topic_list_repo
 
+
 def get_unique_topic_from_ai(topic: str) -> str:
     system_prompt = (
         "Sen popüler bir Türk sözlüğünün kıdemli yazarısın. "
@@ -112,7 +147,7 @@ def get_unique_topic_from_ai(topic: str) -> str:
         "2. Başlığın sonuna nokta koyma, tırnak içine alma."
     )
     user_prompt = f"Şu başlığı sözlük formatında yeniden yaz: '{topic}'"
-    
+
     if groq_client:
         for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
             try:
@@ -131,21 +166,19 @@ def get_unique_topic_from_ai(topic: str) -> str:
                 continue
     return turkish_title(topic)
 
+
 def save_and_run(original_topic: str, unique_topic: str) -> bool:
     try:
-        # 1. Başlığı sadece topics tablosuna ekle
         res = supabase.table("topics").insert({"topic_name": unique_topic}).execute()
         if not res.data:
             print("✕ Başlık veritabanına eklenemedi.")
             return False
 
         topic_id = str(res.data[0]["topic_id"])
-        
-        # 2. Ekşi Sözlük'ten alınan orijinal başlığı günlük JSON önbelleğe işle
+
         save_to_scraped_cache(original_topic)
         print(f"✅ Yeni başlık veritabanına yazıldı: #{unique_topic} (topic_id: {topic_id})")
 
-        # 3. Yorum botlarını sadece bu başlık için tetikle
         print(f"\n🤖 #{unique_topic} için entry botları başlatılıyor...")
         npx_path = shutil.which("npx") or shutil.which("npx.cmd") or "npx"
         use_shell = os.name == "nt"
@@ -160,6 +193,7 @@ def save_and_run(original_topic: str, unique_topic: str) -> bool:
         print(f"✕ İşlem hatası: {e}")
         return False
 
+
 if __name__ == "__main__":
     print(f"🔍 [{TODAY_STR}] Ekşi Sözlük başlıkları taranıyor...")
     raw_topics = get_data_from_target_site()
@@ -168,19 +202,30 @@ if __name__ == "__main__":
         print("İncelenecek başlık bulunamadı.")
         sys.exit(0)
 
-    # Günlük çekilen Ekşi Sözlük başlıkları önbelleğini al
+    # Yerel cache + veritabanındaki bugünkü başlıkları birleştir.
+    # Bu, cache dosyası kaybolsa/sıfırlansa bile aynı başlığın
+    # tekrar tekrar işlenmesini engeller.
     cache_data = load_scraped_cache()
     cached_topics = set(cache_data.get("topics", []))
+    db_topics = get_today_topics_from_db()
+    all_seen_topics = cached_topics | db_topics
+
     processed = False
 
     for topic in raw_topics:
         norm_key = normalize_text(topic)
-        # Ekşi Sözlük'ten bugün bu başlık daha önce alındıysa kesinlikle tekrar alma
-        if norm_key in cached_topics:
+        if norm_key in all_seen_topics:
             continue
 
         print(f"\n📌 Ekşi Sözlük'ten yeni taze başlık yakalandı: {topic}")
         unique_topic = get_unique_topic_from_ai(topic)
+
+        # AI'nin ürettiği başlık da (normalize edilmiş haliyle) daha önce
+        # işlenmiş bir başlığa denk geliyorsa, tekrar tekrar aynı sonucu
+        # yazmasını engellemek için bu turu atla.
+        if normalize_text(unique_topic) in all_seen_topics:
+            save_to_scraped_cache(topic)
+            continue
 
         if save_and_run(topic, unique_topic):
             processed = True
