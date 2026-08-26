@@ -109,21 +109,21 @@ def get_unique_topic_from_ai(topic: str) -> str:
                 continue
     return turkish_title(topic)
 
-def save_and_trigger(original_topic: str, unique_topic: str):
+def save_and_run_entry_bots(original_topic: str, unique_topic: str) -> bool:
     try:
-        # 1. Başlığı DB'ye ekle ve topic_id'yi geri al
+        # topics tablosuna başlığı ekle ve topic_id değerini al
         res = supabase.table("topics").insert({"topic_name": unique_topic}).execute()
         created_row = res.data[0] if res.data else None
         
         if not created_row:
-            print("✕ Başlık oluşturuldu fakat ID alınamadı.")
+            print("✕ Başlık DB'ye eklendi ancak topic_id geri alınamadı.")
             return False
 
         topic_id = created_row.get("topic_id")
         supabase.table("weekly_topics").insert({"topic": original_topic}).execute()
-        print(f"✅ Yeni başlık DB'ye mühürlendi: #{unique_topic} (ID: {topic_id})")
+        print(f"✅ Yeni başlık DB'ye yazıldı: #{unique_topic} (topic_id: {topic_id})")
 
-        # 2. runner.ts'e sadece bu başlığı paslayarak tetikle
+        # runner.ts'e parametre olarak topic_id ve unique_topic aktarılır
         print(f"\n🤖 #{unique_topic} başlığı için yorum botları başlatılıyor...")
         npm_path = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
         use_shell = os.name == "nt"
@@ -139,7 +139,7 @@ def save_and_trigger(original_topic: str, unique_topic: str):
         return False
 
 if __name__ == "__main__":
-    print("🔍 Ekşi Sözlük başlıkları taranıyor...")
+    print("🔍 Güncel Ekşi Sözlük başlıkları taranıyor...")
     raw_topics = get_data_from_target_site()
 
     if not raw_topics:
@@ -156,10 +156,10 @@ if __name__ == "__main__":
         print(f"\n📌 Yeni taze başlık yakalandı: {topic}")
         unique_topic = get_unique_topic_from_ai(topic)
 
-        # Başlığı sadece burada açıp, runner'a gönderiyoruz
-        if save_and_trigger(topic, unique_topic):
+        # Başlığı veritabanına kaydet ve o başlığa ait entry döngüsünü başlat
+        if save_and_run_entry_bots(topic, unique_topic):
             processed = True
             break  # Saatte sadece 1 yeni başlık işlenir
 
     if not processed:
-        print("\nℹ️ Tüm popüler başlıklar zaten eklenmiş.")
+        print("\nℹ️ Tüm güncel başlıklar zaten işlenmiş.")
