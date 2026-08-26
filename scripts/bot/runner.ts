@@ -17,27 +17,27 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function runBotFlow() {
-  console.log('🚀 En son eklenen başlık aranıyor...');
+  console.log('🚀 En son eklenen başlık sorgulanıyor...');
 
-  // 1. Veritabanına en son eklenen 1 başlığı çek
+  // topics tablosunda id sütunu olmadığı için sadece topic_id ve topic_name çekiliyor
   const { data: topics, error: topicError } = await supabase
     .from('topics')
-    .select('topic_id, id, topic_name')
+    .select('topic_id, topic_name')
     .order('created_at', { ascending: false })
     .limit(1);
 
   if (topicError || !topics || topics.length === 0) {
-    console.error('❌ Başlık bulunamadı:', topicError);
+    console.error('❌ Başlık bulunamadı veya veritabanı hatası:', topicError);
     return;
   }
 
   const currentTopic = topics[0];
-  const targetTopicId = currentTopic.topic_id || currentTopic.id;
+  const targetTopicId = currentTopic.topic_id;
   const targetTopicName = currentTopic.topic_name;
 
-  console.log(`🎯 Hedef Başlık Mühürlendi: #${targetTopicName} (ID: ${targetTopicId})`);
+  console.log(`🎯 Hedef Başlık: #${targetTopicName} (topic_id: ${targetTopicId})`);
 
-  // 2. Bu başlık altındaki mevcut entry'leri bağlam (context) için topla
+  // Mevcut entry'leri bağlam (context) için çek
   const { data: existingEntriesData } = await supabase
     .from('entries')
     .select('entry')
@@ -47,22 +47,17 @@ async function runBotFlow() {
 
   const contextEntries: string[] = existingEntriesData?.map((e) => e.entry) || [];
 
-  // 3. 10 ile 40 arasında rastgele hedef bot sayısı belirle
+  // 10 ile 40 arasında rastgele sayıda bot seç
   const targetBotCount = Math.floor(Math.random() * (40 - 10 + 1)) + 10;
-  
-  // Personaları karıştır ve hedef adette tekil bot seç
   const shuffledPersonas = [...BOT_PERSONAS].sort(() => 0.5 - Math.random());
-  const selectedBots: BotPersona[] = shuffledPersonas.slice(0, Math.min(targetBotCount, shuffledBots.length));
+  const selectedBots: BotPersona[] = shuffledPersonas.slice(0, Math.min(targetBotCount, shuffledPersonas.length));
 
-  console.log(`📋 Bu başlığa toplam ${selectedBots.length} farklı bot sırayla entry girecek.`);
-  console.log(`🔒 Bu başlığın ${selectedBots.length} yorumu tamamlanmadan sistem sonlanmayacaktır.\n`);
+  console.log(`👉 Toplam ${selectedBots.length} bot sırayla entry yazacak.\n`);
 
-  // 4. Botları eşzamanlı DEĞİL, sırayla (sequential) çalıştır
   for (let i = 0; i < selectedBots.length; i++) {
     const bot = selectedBots[i];
-    console.log(`✍️ [${i + 1}/${selectedBots.length}] @${bot.username} sıraya girdi...`);
+    console.log(`✍️ [${i + 1}/${selectedBots.length}] @${bot.username} entry üretiyor...`);
 
-    // Profil ID'sini bul
     const { data: profile } = await supabase
       .from('profiles')
       .select('id')
@@ -70,14 +65,12 @@ async function runBotFlow() {
       .maybeSingle();
 
     if (!profile) {
-      console.warn(`⚠️ @${bot.username} profili veritabanında bulunamadı, bu bot atlanıyor.`);
+      console.warn(`⚠️ @${bot.username} profili bulunamadı, geçiliyor.`);
       continue;
     }
 
-    // AI API'lerinden sırayla entry üret (Groq -> Gemini -> Ollama -> Fallback)
     const generatedText = await generateEntry(targetTopicName, bot, contextEntries);
 
-    // Supabase'e entry'i bas
     const { data: newEntry, error: insertError } = await supabase
       .from('entries')
       .insert({
@@ -90,22 +83,21 @@ async function runBotFlow() {
       .single();
 
     if (insertError) {
-      console.error(`✕ @${bot.username} entry yazılamadı:`, insertError.message);
+      console.error(`✕ Entry ekleme hatası (@${bot.username}):`, insertError.message);
     } else {
       console.log(`✅ [${i + 1}/${selectedBots.length}] @${bot.username}: "${generatedText}"`);
-      // Sonraki botların bağlamı (sohbet akışı) için listeye ekle
       contextEntries.push(generatedText);
     }
 
-    // 5. API Rate-Limit ve Kota Koruması: Her entry arası 12 - 20 saniye güvenli bekleme
+    // Rate-limit koruması (12-20 sn bekleme)
     if (i < selectedBots.length - 1) {
       const waitTimeSec = Math.floor(Math.random() * (20 - 12 + 1)) + 12;
-      console.log(`⏳ [Kota Koruması] Sonraki yazar için ${waitTimeSec} saniye bekleniyor...\n`);
+      console.log(`⏳ Kota koruması için ${waitTimeSec} sn bekleniyor...\n`);
       await sleep(waitTimeSec * 1000);
     }
   }
 
-  console.log(`\n🎉 #${targetTopicName} başlığına ait ${selectedBots.length} bot yorumunun tamamı başarıyla girildi!`);
+  console.log(`\n🎉 #${targetTopicName} başlığı için tüm yorumlar tamamlandı!`);
 }
 
 runBotFlow();
