@@ -27,8 +27,8 @@ async function generateWithGroq(model: string, systemPrompt: string, userPrompt:
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.85,
-        max_tokens: 160,
+        temperature: 0.95, // Doğallık ve yaratıcılık için artırıldı
+        max_tokens: 180,
       }),
     });
 
@@ -44,7 +44,10 @@ async function generateWithGroq(model: string, systemPrompt: string, userPrompt:
 async function generateWithGemini(modelName: string, systemPrompt: string, userPrompt: string): Promise<string | null> {
   if (!genAI) return null;
   try {
-    const model = genAI.getGenerativeModel({ model: modelName });
+    const model = genAI.getGenerativeModel({
+      model: modelName,
+      generationConfig: { temperature: 0.95 }
+    });
     const result = await model.generateContent(`${systemPrompt}\n\n${userPrompt}`);
     const response = await result.response;
     return response.text()?.trim() || null;
@@ -69,7 +72,7 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        options: { temperature: 0.85, num_predict: 90 },
+        options: { temperature: 0.95, num_predict: 90 },
       }),
     });
 
@@ -83,22 +86,24 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
 }
 
 function getFallbackEntry(sentenceCount: number): string {
-  const shortTemplates = [
-    `valla bu konuda ne desek boş, olan yine bize oluyor.`,
-    `şaşırma eşiğimizi çoktan kaybettik maalesef.`,
-    `klasik bir türkiye simülasyonu vakası daha.`
+  const shortPool = [
+    `valla ne desek boş, olan yine bize oluyor amk.`,
+    `şaşırma eşiğimizi kaybedeli çok oldu ya.`,
+    `tam bir türkiye simülasyonu özeti.`,
+    `klasik algı operasyonu, yemezler.`,
+    `gülüp geçilmesi gereken bomboş bir mevzu.`
   ];
-  const mediumTemplates = [
-    `haberi ilk gördüğümde şaşırmıştım ama sonra durup düşününce gayet normal geldi. şaşırma eşiğimizi çoktan kaybettik.`,
-    `uzun uzun analiz kasmaya gerek yok bence. sonu baştan belli olan klasik bir mevzu.`
+  const mediumPool = [
+    `haberi ilk gördüğümde şaşırmıştım ama sonra durup düşününce gayet normal geldi. şaşırma eşiğimizi çoktan kaybettik maalesef.`,
+    `uzun uzun analiz kasmaya gerek yok bence. sonu baştan belli olan klasik bir saçmalık işte.`
   ];
-  const longTemplates = [
-    `zamanında çok konuşulup tartışılmıştı ama hala aynı yerde sayıyoruz. değişen hiçbir şey yok. herkes bir şeyler söylüyor da kimsenin işin aslına baktığı yok. yine boş bir gündemle oyalanıyoruz.`
+  const longPool = [
+    `zamanında çok konuşulup tartışılmıştı ama hala aynı yerde sayıyoruz. değişen hiçbir şey yok. herkes bir şeyler sıkıyor da kimsenin işin aslına baktığı yok. yine boş bir tantanayla oyalanıyoruz.`
   ];
 
-  if (sentenceCount === 1) return shortTemplates[Math.floor(Math.random() * shortTemplates.length)];
-  if (sentenceCount <= 2) return mediumTemplates[Math.floor(Math.random() * mediumTemplates.length)];
-  return longTemplates[Math.floor(Math.random() * longTemplates.length)];
+  if (sentenceCount === 1) return shortPool[Math.floor(Math.random() * shortPool.length)];
+  if (sentenceCount <= 2) return mediumPool[Math.floor(Math.random() * mediumPool.length)];
+  return longPool[Math.floor(Math.random() * longPool.length)];
 }
 
 export async function generateEntry(
@@ -106,23 +111,29 @@ export async function generateEntry(
   persona: BotPersona,
   existingEntries: string[] = []
 ): Promise<string> {
-  // 1 ile 4 arasında rastgele cümle hedefi belirlenir
+  // 1 ile 4 arasında rastgele hedef cümle sayısı
   const sentenceTarget = Math.floor(Math.random() * 4) + 1;
 
   const systemInstruction = `
-Sen Ekşi Sözlük'te yazan gerçek bir Türk internet kullanıcısısın. Kullanıcı adın: "${persona.username}".
-Tavrın: ${persona.tone}.
+Sen Ekşi Sözlük'te entry yazan gerçek bir insansın. Kullanıcı adın: "${persona.username}".
+Kişiliğin/Tavrın: ${persona.tone}.
 
-KURALLAR:
-1. Ansiklopedik, bülten veya akademik dil KESİNLİKLE YASAKTIR.
-2. Metin uzunluğu KESİNLİKLE tam ${sentenceTarget} cümle olmalıdır. Ne eksik ne fazla.
-3. Tırnak işareti, başlık ve "bence" gibi kalıplar kullanma; samimi sözlük diliyle yaz.
+KESİNLİKLE YASAKLI OLAN ŞEYLER (AI GİBİ DURAN HER ŞEY):
+- "Özetle", "Sonuç olarak", "Bence bu durum", "Kayda değer", "Prestijli", "Strateji", "Gözler önüne sermektedir", "Altını çizmek gerekir".
+- Resmi makale dili, köşe yazarı üslubu, haber spikeri veya Wikipedia anlatımı KESİNLİKLE YASAK.
+- Tırnak işareti (""), başlık tekrarı, liste veya maddeleme işareti KULLANMA.
+
+NASIL YAZACAKSIN (İNSAN GİBİ):
+1. Tam bir sözlük yazarı gibi konuş; rahat, sokak ağzıyla, bazen alaycı, bazen bezmiş, bazen dobra.
+2. Noktalamayı ve büyük harfleri aşırı kuralcı kullanma. Gerçek insanlar gibi yaz.
+3. KESİNLİKLE tam ${sentenceTarget} cümle yaz. Ne 1 eksik ne 1 fazla.
 `;
 
   const contextPart = existingEntries.length > 0
-    ? `\nDiğer yazarların dedikleri:\n- ${existingEntries.slice(-2).join('\n- ')}`
+    ? `\nÖnceki yazarların dedikleri:\n- ${existingEntries.slice(-2).join('\n- ')}`
     : '';
-  const userPrompt = `Başlık: "${topicName}"${contextPart}\n\nTam ${sentenceTarget} cümlelik sözlük entry'si yaz:`;
+
+  const userPrompt = `Başlık: "${topicName}"${contextPart}\n\nBu başlığa tam ${sentenceTarget} cümlelik doğal bir sözlük yorumu patlat:`;
 
   let text: string | null = null;
 
@@ -138,7 +149,7 @@ KURALLAR:
 
   // 2. Gemini
   if (!text) {
-    const geminiModels = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+    const geminiModels = ['gemini-2.5-flash', 'gemini-1.5-flash'];
     for (const gModel of geminiModels) {
       text = await generateWithGemini(gModel, systemInstruction, userPrompt);
       if (text) {
@@ -160,12 +171,14 @@ KURALLAR:
     text = getFallbackEntry(sentenceTarget);
   }
 
+  // Metin temizleme ve insanlaştırma filtreleri
   let cleanText = text
-    .replace(/^["'“”]+|["'“”]+$/g, '')
-    .replace(/^(entry:|yorum:)/i, '')
+    .replace(/^["'“”«»]+|["'“”«»]+$/g, '')
+    .replace(/^(entry:|yorum:|cevap:)/i, '')
     .trim();
 
-  if (cleanText.length > 0 && Math.random() > 0.3) {
+  // %75 ihtimalle ilk harfi küçük başlat (Sözlük jargonu gereği gerçek insan dokunuşu)
+  if (cleanText.length > 0 && Math.random() > 0.25) {
     cleanText = cleanText.charAt(0).toLowerCase() + cleanText.slice(1);
   }
 
