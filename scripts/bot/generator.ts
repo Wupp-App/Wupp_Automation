@@ -28,7 +28,7 @@ async function generateWithGroq(model: string, systemPrompt: string, userPrompt:
           { role: 'user', content: userPrompt },
         ],
         temperature: 0.85,
-        max_tokens: 150,
+        max_tokens: 160,
       }),
     });
 
@@ -82,16 +82,23 @@ async function generateWithOllama(systemPrompt: string, userPrompt: string): Pro
   }
 }
 
-function getFallbackEntry(): string {
-  const templates = [
-    `valla bu konuda ne desek boş, her zamanki gibi yine olan bize oluyor.`,
-    `haberi ilk gördüğümde şaşırmıştım ama sonra durup düşününce gayet normal geldi.`,
-    `uzun uzun analiz kasmaya gerek yok bence, sonu baştan belli olan klasik bir mevzu.`,
-    `herkes bir şeyler söylüyor da kimsenin işin aslına baktığı yok. yine boş bir gündemle oyalanıyoruz.`,
-    `zamanında çok konuşulup tartışılmıştı ama hala aynı yerde sayıyoruz. değişen hiçbir şey yok.`,
-    `yorumları okumaya geldim, tam da tahmin ettiğim gibi herkes birbirine girmiş.`
+function getFallbackEntry(sentenceCount: number): string {
+  const shortTemplates = [
+    `valla bu konuda ne desek boş, olan yine bize oluyor.`,
+    `şaşırma eşiğimizi çoktan kaybettik maalesef.`,
+    `klasik bir türkiye simülasyonu vakası daha.`
   ];
-  return templates[Math.floor(Math.random() * templates.length)];
+  const mediumTemplates = [
+    `haberi ilk gördüğümde şaşırmıştım ama sonra durup düşününce gayet normal geldi. şaşırma eşiğimizi çoktan kaybettik.`,
+    `uzun uzun analiz kasmaya gerek yok bence. sonu baştan belli olan klasik bir mevzu.`
+  ];
+  const longTemplates = [
+    `zamanında çok konuşulup tartışılmıştı ama hala aynı yerde sayıyoruz. değişen hiçbir şey yok. herkes bir şeyler söylüyor da kimsenin işin aslına baktığı yok. yine boş bir gündemle oyalanıyoruz.`
+  ];
+
+  if (sentenceCount === 1) return shortTemplates[Math.floor(Math.random() * shortTemplates.length)];
+  if (sentenceCount <= 2) return mediumTemplates[Math.floor(Math.random() * mediumTemplates.length)];
+  return longTemplates[Math.floor(Math.random() * longTemplates.length)];
 }
 
 export async function generateEntry(
@@ -99,56 +106,58 @@ export async function generateEntry(
   persona: BotPersona,
   existingEntries: string[] = []
 ): Promise<string> {
-  const sentenceTarget = Math.floor(Math.random() * 2) + 2;
+  // 1 ile 4 arasında rastgele cümle hedefi belirlenir
+  const sentenceTarget = Math.floor(Math.random() * 4) + 1;
+
   const systemInstruction = `
 Sen Ekşi Sözlük'te yazan gerçek bir Türk internet kullanıcısısın. Kullanıcı adın: "${persona.username}".
 Tavrın: ${persona.tone}.
 
 KURALLAR:
 1. Ansiklopedik, bülten veya akademik dil KESİNLİKLE YASAKTIR.
-2. Tam ${sentenceTarget} cümle yaz.
-3. Tırnak işareti ve başlık kullanma; gündelik sözlük jargonuyla yaz.
+2. Metin uzunluğu KESİNLİKLE tam ${sentenceTarget} cümle olmalıdır. Ne eksik ne fazla.
+3. Tırnak işareti, başlık ve "bence" gibi kalıplar kullanma; samimi sözlük diliyle yaz.
 `;
 
-  const contextPart = existingEntries.length > 0 
+  const contextPart = existingEntries.length > 0
     ? `\nDiğer yazarların dedikleri:\n- ${existingEntries.slice(-2).join('\n- ')}`
     : '';
-  const userPrompt = `Başlık: "${topicName}"${contextPart}\n\nSözlük entry'si yaz:`;
+  const userPrompt = `Başlık: "${topicName}"${contextPart}\n\nTam ${sentenceTarget} cümlelik sözlük entry'si yaz:`;
 
   let text: string | null = null;
 
-  // 1. ÖNCELİK: Groq Modelleri
+  // 1. Groq
   const groqModels = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'];
   for (const model of groqModels) {
     text = await generateWithGroq(model, systemInstruction, userPrompt);
     if (text) {
-      console.log(`⚡ [Groq: ${model}] @${persona.username} üretti.`);
+      console.log(`⚡ [Groq: ${model}] @${persona.username} (${sentenceTarget} cümle) yazdı.`);
       break;
     }
   }
 
-  // 2. ÖNCELİK: Gemini Modelleri
+  // 2. Gemini
   if (!text) {
     const geminiModels = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
     for (const gModel of geminiModels) {
       text = await generateWithGemini(gModel, systemInstruction, userPrompt);
       if (text) {
-        console.log(`✨ [Gemini: ${gModel}] @${persona.username} üretti.`);
+        console.log(`✨ [Gemini: ${gModel}] @${persona.username} (${sentenceTarget} cümle) yazdı.`);
         break;
       }
     }
   }
 
-  // 3. ÖNCELİK: Ollama
+  // 3. Ollama
   if (!text) {
     text = await generateWithOllama(systemInstruction, userPrompt);
-    if (text) console.log(`🦙 [Ollama: ${LOCAL_MODEL}] @${persona.username} üretti.`);
+    if (text) console.log(`🦙 [Ollama: ${LOCAL_MODEL}] @${persona.username} (${sentenceTarget} cümle) yazdı.`);
   }
 
-  // 4. Fallback (Tüm API kotaları dolsa dahi bot durmaz)
+  // 4. Fallback
   if (!text) {
-    console.warn(`🛡️ [Fallback] @${persona.username} için şablon entry kullanıldı.`);
-    text = getFallbackEntry();
+    console.warn(`🛡️ [Fallback] @${persona.username} için ${sentenceTarget} cümlelik şablon kullanıldı.`);
+    text = getFallbackEntry(sentenceTarget);
   }
 
   let cleanText = text
