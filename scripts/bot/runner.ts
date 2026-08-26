@@ -16,6 +16,11 @@ if (!supabaseUrl || !supabaseKey) {
 const supabase = createClient(supabaseUrl, supabaseKey);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// [min, max] aralığında (dahil) rastgele tam sayı üretir
+function randomInt(min: number, max: number): number {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
 async function runBotFlow() {
   const args = process.argv.slice(2);
   const targetTopicId = args[0] ? parseInt(args[0], 10) : null;
@@ -35,11 +40,10 @@ async function runBotFlow() {
     .eq('topic_id', targetTopicId)
     .order('created_at', { ascending: true })
     .limit(15);
-
   const contextEntries: string[] = existingEntriesData?.map((e) => e.entry) || [];
 
-  // 10 ile 40 arasında rastgele bot seç
-  const targetBotCount = Math.floor(Math.random() * (40 - 10 + 1)) + 10;
+  // 10 ile 50 arasında rastgele bot seç
+  const targetBotCount = randomInt(10, 50);
   const shuffledBots = [...BOT_PERSONAS].sort(() => 0.5 - Math.random());
   const selectedBots: BotPersona[] = shuffledBots.slice(0, Math.min(targetBotCount, shuffledBots.length));
 
@@ -60,13 +64,12 @@ async function runBotFlow() {
       continue;
     }
 
-    // AI üretimi (tamamlanmış cümleler & doğal sözlük dili)
+    // AI üretimi (tamamlanmış cümleler & doğal sözlük dili, 2-5 cümle generator.ts içinde belirleniyor)
     const generatedText = await generateEntry(targetTopicName, bot, contextEntries);
 
-    // Her entry için 3 ile 50 arasında rastgele beğeni sayısı belirlenir
-    const randomLikes = Math.floor(Math.random() * (50 - 3 + 1)) + 3;
+    // Her entry için 10 ile 50 arasında rastgele beğeni sayısı belirlenir
+    const randomLikes = randomInt(10, 50);
 
-    // Entry kaydı
     const { error: insertError } = await supabase
       .from('entries')
       .insert({
@@ -83,9 +86,9 @@ async function runBotFlow() {
       contextEntries.push(generatedText);
     }
 
-    // API kota ve rate-limit koruması: her entry arası 12-20 sn bekleme[cite: 4]
+    // API kota ve rate-limit koruması: her entry arası 12-20 sn bekleme
     if (i < selectedBots.length - 1) {
-      const waitTimeSec = Math.floor(Math.random() * (20 - 12 + 1)) + 12;
+      const waitTimeSec = randomInt(12, 20);
       console.log(`⏳ Kota koruması için ${waitTimeSec} sn bekleniyor...\n`);
       await sleep(waitTimeSec * 1000);
     }
