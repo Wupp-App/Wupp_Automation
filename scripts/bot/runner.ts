@@ -10,34 +10,37 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-  throw new Error('Supabase ortam değişkenleri eksik!');
+  throw new Error('Supabase URL veya Service Role Key eksik!');
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function runBotFlow() {
-  console.log('🚀 En son eklenen başlık sorgulanıyor...');
+  // script.py'den gelen topic_id ve topic_name argümanları
+  const args = process.argv.slice(2);
+  let targetTopicId: string | number | null = args[0] || null;
+  let targetTopicName: string | null = args.slice(1).join(' ') || null;
 
-  // topics tablosunda id sütunu olmadığı için sadece topic_id ve topic_name çekiliyor
-  const { data: topics, error: topicError } = await supabase
-    .from('topics')
-    .select('topic_id, topic_name')
-    .order('created_at', { ascending: false })
-    .limit(1);
+  // Eğer parametre verilmediyse DB'deki son başlığı çek
+  if (!targetTopicId || !targetTopicName) {
+    const { data: topics, error } = await supabase
+      .from('topics')
+      .select('topic_id, topic_name')
+      .order('created_at', { ascending: false })
+      .limit(1);
 
-  if (topicError || !topics || topics.length === 0) {
-    console.error('❌ Başlık bulunamadı veya veritabanı hatası:', topicError);
-    return;
+    if (error || !topics || topics.length === 0) {
+      console.error('❌ İşlenecek başlık bulunamadı.');
+      return;
+    }
+    targetTopicId = topics[0].topic_id;
+    targetTopicName = topics[0].topic_name;
   }
 
-  const currentTopic = topics[0];
-  const targetTopicId = currentTopic.topic_id;
-  const targetTopicName = currentTopic.topic_name;
+  console.log(`🎯 Hedef Başlık: #${targetTopicName} (ID: ${targetTopicId})`);
 
-  console.log(`🎯 Hedef Başlık: #${targetTopicName} (topic_id: ${targetTopicId})`);
-
-  // Mevcut entry'leri bağlam (context) için çek
+  // Mevcut entry'leri bağlam (context) olarak al
   const { data: existingEntriesData } = await supabase
     .from('entries')
     .select('entry')
@@ -52,11 +55,11 @@ async function runBotFlow() {
   const shuffledPersonas = [...BOT_PERSONAS].sort(() => 0.5 - Math.random());
   const selectedBots: BotPersona[] = shuffledPersonas.slice(0, Math.min(targetBotCount, shuffledPersonas.length));
 
-  console.log(`👉 Toplam ${selectedBots.length} bot sırayla entry yazacak.\n`);
+  console.log(`👉 Toplam ${selectedBots.length} bot sırayla entry girecek.\n`);
 
   for (let i = 0; i < selectedBots.length; i++) {
     const bot = selectedBots[i];
-    console.log(`✍️ [${i + 1}/${selectedBots.length}] @${bot.username} entry üretiyor...`);
+    console.log(`✍️ [${i + 1}/${selectedBots.length}] @${bot.username} hazırlanıyor...`);
 
     const { data: profile } = await supabase
       .from('profiles')
@@ -69,7 +72,7 @@ async function runBotFlow() {
       continue;
     }
 
-    const generatedText = await generateEntry(targetTopicName, bot, contextEntries);
+    const generatedText = await generateEntry(targetTopicName!, bot, contextEntries);
 
     const { data: newEntry, error: insertError } = await supabase
       .from('entries')
@@ -89,7 +92,7 @@ async function runBotFlow() {
       contextEntries.push(generatedText);
     }
 
-    // Rate-limit koruması (12-20 sn bekleme)
+    // Rate-limit ve kota koruması için her entry arasına 12-20 sn bekleme
     if (i < selectedBots.length - 1) {
       const waitTimeSec = Math.floor(Math.random() * (20 - 12 + 1)) + 12;
       console.log(`⏳ Kota koruması için ${waitTimeSec} sn bekleniyor...\n`);
@@ -97,7 +100,7 @@ async function runBotFlow() {
     }
   }
 
-  console.log(`\n🎉 #${targetTopicName} başlığı için tüm yorumlar tamamlandı!`);
+  console.log(`\n🎉 #${targetTopicName} başlığına ait ${selectedBots.length} yorum başarıyla tamamlandı!`);
 }
 
 runBotFlow();
