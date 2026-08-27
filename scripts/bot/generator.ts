@@ -46,7 +46,9 @@ function pickRandom<T>(arr: readonly T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// Yarım kalan cümleleri tespit edip tam kapatılmış cümleyle sonlandıran yardımcı
+// Yarım kalan cümle/kelimeleri tespit edip temizleyen yardımcı.
+// Güvenilir bir kesim noktası yoksa metni "geçersiz" sayıp boş döner
+// (kesik kelimenin sonuna nokta yapıştırmak gibi bir hataya düşmez).
 function fixIncompleteSentence(text: string): string {
   let cleaned = text.trim();
   if (!cleaned) return cleaned;
@@ -58,14 +60,15 @@ function fixIncompleteSentence(text: string): string {
     const lastPunctuation = Math.max(
       cleaned.lastIndexOf('.'),
       cleaned.lastIndexOf('!'),
-      cleaned.lastIndexOf('?'),
-      cleaned.lastIndexOf('...')
+      cleaned.lastIndexOf('?')
     );
 
     if (lastPunctuation > 15) {
+      // Yarım kalan son cümleyi at, sadece tamamlanmış kısmı bırak
       cleaned = cleaned.substring(0, lastPunctuation + 1).trim();
     } else {
-      cleaned = cleaned + '.';
+      // Güvenilir bir kesim noktası yok -> kesik parçayı komple geçersiz say
+      return '';
     }
   }
   return cleaned;
@@ -125,7 +128,7 @@ async function generateWithGroq(
           { role: 'user', content: userPrompt },
         ],
         temperature,
-        max_tokens: 450,
+        max_tokens: 700,
       }),
     });
 
@@ -148,7 +151,7 @@ async function generateWithGemini(
   try {
     const model = genAI.getGenerativeModel({
       model: modelName,
-      generationConfig: { temperature, maxOutputTokens: 450 }
+      generationConfig: { temperature, maxOutputTokens: 700 }
     });
     const result = await model.generateContent(`${systemPrompt}\n\n${userPrompt}`);
     const response = await result.response;
@@ -178,7 +181,7 @@ async function generateWithOllama(
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        options: { temperature, num_predict: 200 },
+        options: { temperature, num_predict: 400 },
       }),
     });
 
@@ -271,6 +274,7 @@ YASAKLI KALIPLAR:
 - "özetle", "sonuç olarak", "bu durum göstermektedir", "kayda değer", "altını çizmek gerekir", "bence bu olay".
 - Resmi makale dili, haber bülteni jargonu veya akademik tez dili KESİNLİKLE YASAKTIR.
 - Başlık tekrarı ve tırnak işareti ("") kullanma.
+- Markdown biçimlendirme kullanma (yıldız, kalın, italik, başlık işareti vb.).
 - Daha önce yazılmış entry'lerdeki cümleleri veya kalıpları birebir tekrar etme; aynı fikri bile söyleyeceksen tamamen farklı kelimeler ve farklı bir açıdan söyle.
 
 KURALLAR:
@@ -319,9 +323,18 @@ KURALLAR:
     let cleanText = text
       .replace(/^["'“”«»]+|["'“”«»]+$/g, '')
       .replace(/^(entry:|yorum:|cevap:)/i, '')
+      .replace(/\*\*/g, '')
       .trim();
 
     cleanText = fixIncompleteSentence(cleanText);
+
+    // Temizlik sonrası elimizde kullanılabilir bir şey kalmadıysa
+    // (yarım kelimede kesilmiş ve güvenilir bir kesim noktası yoksa)
+    // bu denemeyi geçersiz say ve bir sonraki attempt'e geç.
+    if (!cleanText || cleanText.length < 10) {
+      finalText = null;
+      continue;
+    }
 
     // Sözlük jargonu için %70 ihtimalle küçük harfle başlat
     if (cleanText.length > 0 && Math.random() > 0.3) {
