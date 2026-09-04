@@ -38,7 +38,7 @@ def english_title(text: str) -> str:
     return text.strip().title()
 
 def get_existing_us_topics() -> set:
-    """Supabase'de daha önce oluşturulmuş US bölgesine ait başlıkları çeker."""
+    """Supabase'de daha önce oluşturulmuş US başlıklarını çeker."""
     cached = set()
     try:
         res = supabase.table("topics").select("topic_name").eq("region", "US").execute()
@@ -47,7 +47,7 @@ def get_existing_us_topics() -> set:
             if name:
                 cached.add(normalize_text(name))
     except Exception as e:
-        print(f"⚠️ Mevcut başlıkları çekerken hata: {e}")
+        print(f"⚠️ Başlık kontrol hatası: {e}")
     return cached
 
 def generate_topic_from_ai() -> str:
@@ -72,7 +72,7 @@ def generate_topic_from_ai() -> str:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    temperature=0.85
+                    temperature=0.95
                 )
                 text = chat.choices[0].message.content.strip().strip('"\'')
                 if text:
@@ -80,34 +80,13 @@ def generate_topic_from_ai() -> str:
             except Exception:
                 continue
 
-    fallbacks = [
-        "The Illusion Of Modern Digital Detox",
-        "Why Video Game Sequels Keep Disappointing",
-        "The Silent Death Of True Online Privacy",
-        "Working Remotely Is Ruining Spontaneity",
-        "Overrated Masterpieces In Modern Cinema"
+    # API düşerse dinamik sonsuz fallback üretici
+    patterns = [
+        f"The Modern Reality Of {random.choice(['Remote Tech', 'Algorithmic Feeds', 'Indie Devs', 'Urban Loneliness', 'Open Source'])}",
+        f"Why {random.choice(['Binge Watching', 'AAA Games', 'Microservices', 'Clean Code', 'Smart Gadgets'])} Became Exhausting",
+        f"Unpopular Takes On {random.choice(['Modern Cinema', 'Subscription Fatigue', 'Digital Nomadism', 'Social Validation'])}"
     ]
-    return english_title(random.choice(fallbacks))
-
-def find_runner_script() -> str:
-    """runner_en.ts dosyasının konumunu çalışma dizinine ve script konumuna göre tespit eder."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    cwd = os.getcwd()
-
-    candidates = [
-        os.path.join(script_dir, "scripts", "bot", "runner_en.ts"),
-        os.path.join(cwd, "scripts", "bot", "runner_en.ts"),
-        os.path.join(script_dir, "runner_en.ts"),
-        os.path.join(cwd, "runner_en.ts"),
-        "scripts/bot/runner_en.ts"
-    ]
-
-    for path in candidates:
-        if os.path.isfile(path):
-            return os.path.abspath(path)
-
-    # Bulunamazsa standart göreli yolu döner
-    return "scripts/bot/runner_en.ts"
+    return english_title(random.choice(patterns))
 
 def save_and_run(unique_topic: str) -> bool:
     try:
@@ -123,35 +102,16 @@ def save_and_run(unique_topic: str) -> bool:
         topic_id = str(res.data[0]["topic_id"])
         print(f"✅ Yeni US başlık oluşturuldu: #{unique_topic} (topic_id: {topic_id})")
 
-        runner_target = find_runner_script()
-        
-        # Eğer dosya mevcut değilse ayrıntılı dizin logu basarak net teşhis koyar
-        if not os.path.isfile(runner_target):
-            print(f"\n❌ DOSYA BULUNAMADI: '{runner_target}' diskte yok!")
-            print(f"📍 Mevcut CWD (Çalışma Dizini): {os.getcwd()}")
-            print(f"📍 Script Dizini: {os.path.dirname(os.path.abspath(__file__))}")
-            bot_dir = os.path.join(os.getcwd(), "scripts", "bot")
-            if os.path.exists(bot_dir):
-                print(f"📁 scripts/bot/ içerisindeki dosyalar: {os.listdir(bot_dir)}")
-            else:
-                print("📁 scripts/bot/ klasörü hiç bulunamadı! Git'e commit edilmemiş olabilir.")
-            return False
-
         print(f"\n🤖 #{unique_topic} için EN entry botları tetikleniyor...")
-        print(f"🚀 Çalıştırılan Script: {runner_target}")
-        
         npx_path = shutil.which("npx") or shutil.which("npx.cmd") or "npx"
         use_shell = os.name == "nt"
 
         subprocess.run(
-            [npx_path, "tsx", runner_target, topic_id, unique_topic],
+            [npx_path, "tsx", "scripts/bot/runner_en.ts", topic_id, unique_topic],
             shell=use_shell,
             check=True
         )
         return True
-    except subprocess.CalledProcessError as e:
-        print(f"✕ Bot runner çalıştırma hatası (exit code {e.returncode})")
-        return False
     except Exception as e:
         print(f"✕ İşlem hatası: {e}")
         return False
@@ -161,14 +121,13 @@ if __name__ == "__main__":
     existing_topics = get_existing_us_topics()
 
     chosen_topic = None
-    for attempt in range(5):
+    for attempt in range(12):
         candidate = generate_topic_from_ai()
         if normalize_text(candidate) not in existing_topics:
             chosen_topic = candidate
             break
 
     if not chosen_topic:
-        print("✕ Özgün bir başlık türetilemedi, bir sonraki döngü bekleniyor.")
-        sys.exit(0)
+        chosen_topic = f"The Unspoken Fatigue Of Modern {random.choice(['Tech', 'Gaming', 'Algorithms', 'Workplaces'])}"
 
     save_and_run(chosen_topic)
