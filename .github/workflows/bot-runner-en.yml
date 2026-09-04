@@ -28,13 +28,6 @@ jobs:
           pip install groq supabase
           npm install
 
-      - name: Dosya Kontrolü (Debug)
-        run: |
-          echo "=== Dizin İçeriği ==="
-          ls -la
-          echo "=== scripts/bot/ İçeriği ==="
-          ls -la scripts/bot/
-
       - name: Bot Akışını Başlat
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
