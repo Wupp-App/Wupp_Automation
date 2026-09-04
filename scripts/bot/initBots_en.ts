@@ -1,26 +1,30 @@
 import { supabaseAdmin } from './config';
-import { BOT_PERSONAS } from './personas';
-import { BOT_PERSONAS_EN } from './personas_en'; // İngilizce persona havuzu
+import { BOT_PERSONAS_EN } from './personas_en';
 
-async function initBots() {
-  // Hem TR hem EN persona listesini birleştiriyoruz
-  const ALL_BOTS = [...BOT_PERSONAS, ...BOT_PERSONAS_EN];
+async function initEnglishBots() {
+  console.log(`🤖 Toplam ${BOT_PERSONAS_EN.length} İngilizce bot hesabı senkronize ediliyor...`);
 
-  console.log(`🤖 Toplam ${ALL_BOTS.length} bot (TR + EN) senkronize ediliyor...`);
+  // Auth kullanıcı listesini tek seferde çekiyoruz
+  const { data: userListData, error: listError } = await supabaseAdmin.auth.admin.listUsers();
+  
+  if (listError) {
+    console.error('❌ Kullanıcı listesi alınamadı:', listError.message);
+    return;
+  }
 
-  // Auth kullanıcılarını tek seferde çek
-  const { data: userListData } = await supabaseAdmin.auth.admin.listUsers();
   const allUsers = userListData?.users || [];
 
-  for (const bot of ALL_BOTS) {
+  for (const bot of BOT_PERSONAS_EN) {
     let userId: string | null = null;
 
-    // 1. Auth kontrolü
+    // 1. Auth tarafında bu email var mı kontrol et
     const existingAuth = allUsers.find((u) => u.email === bot.email);
 
     if (existingAuth) {
       userId = existingAuth.id;
+      console.log(`ℹ️ Auth hesabı mevcut: @${bot.username}`);
     } else {
+      // Yoksa Auth kullanıcısını oluştur
       const { data: newUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
         email: bot.email,
         password: 'BotPasswordSecure123!',
@@ -29,7 +33,7 @@ async function initBots() {
       });
 
       if (authError || !newUser.user) {
-        console.error(`✕ @${bot.username} auth oluşturulamadı:`, authError?.message);
+        console.error(`✕ @${bot.username} auth hesabı oluşturulamadı:`, authError?.message);
         continue;
       }
       userId = newUser.user.id;
@@ -38,7 +42,7 @@ async function initBots() {
 
     if (!userId) continue;
 
-    // 2. Profiles kontrolü & upsert
+    // 2. Profiles tablosunda kayıt var mı kontrol et
     const { data: existingProfile } = await supabaseAdmin
       .from('profiles')
       .select('id')
@@ -57,23 +61,25 @@ async function initBots() {
         .eq('id', userId);
       profileError = error;
     } else {
-      const { error } = await supabaseAdmin.from('profiles').insert({
-        id: userId,
-        username: bot.username,
-        bio: bot.bio,
-        avatar_url: bot.avatar_url,
-      });
+      const { error } = await supabaseAdmin
+        .from('profiles')
+        .insert({
+          id: userId,
+          username: bot.username,
+          bio: bot.bio,
+          avatar_url: bot.avatar_url,
+        });
       profileError = error;
     }
 
     if (profileError) {
       console.error(`✕ @${bot.username} profiles tablosuna eklenemedi:`, profileError.message);
     } else {
-      console.log(`🎉 @${bot.username} profili hazır.`);
+      console.log(`🎉 @${bot.username} profili ve fotoğrafı hazır.`);
     }
   }
 
-  console.log('✨ Tüm bot hesapları başarıyla senkronize edildi.');
+  console.log('\n✨ Tüm İngilizce bot hesapları başarıyla senkronize edildi!');
 }
 
-initBots();
+initEnglishBots();
