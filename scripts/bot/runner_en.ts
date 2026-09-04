@@ -20,60 +20,61 @@ function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// Botları kontrol eden ve eksik olanları anında ekleyen fonksiyon
-async function ensureBotsExist(requiredBots: BotPersona[]) {
-  const usernames = requiredBots.map((b) => b.username);
-
-  const { data: existingProfiles } = await supabase
+/**
+ * Profil veritabanında yoksa Auth ve Profiles tablosunda anında oluşturur.
+ */
+async function getOrCreateBotProfileId(bot: BotPersona): Promise<string | null> {
+  // 1. Profiles tablosunda mevcut mu kontrol et
+  const { data: existingProfile } = await supabase
     .from('profiles')
-    .select('id, username')
-    .in('username', usernames);
+    .select('id')
+    .eq('username', bot.username)
+    .maybeSingle();
 
-  const foundMap = new Map<string, string>();
-  existingProfiles?.forEach((p) => foundMap.set(p.username, p.id));
-
-  // Eksik olan botları tespit et ve tek tek oluştur
-  for (const bot of requiredBots) {
-    if (foundMap.has(bot.username)) continue;
-
-    console.log(`⚡ Profil bulunamadı, otomatik oluşturuluyor: @${bot.username}`);
-
-    try {
-      // 1. Auth kullanıcısı var mı kontrol et / yoksa oluştur
-      const { data: newUser, error: authError } = await supabase.auth.admin.createUser({
-        email: bot.email,
-        password: 'BotPasswordSecure123!',
-        email_confirm: true,
-        user_metadata: { username: bot.username },
-      });
-
-      let userId = newUser?.user?.id;
-
-      if (authError) {
-        // Zaten kayıtlıysa auth listesinden id'yi bul
-        const { data: usersData } = await supabase.auth.admin.listUsers();
-        const existing = usersData?.users?.find((u) => u.email === bot.email);
-        userId = existing?.id;
-      }
-
-      if (!userId) continue;
-
-      // 2. Profiles tablosuna kaydet
-      await supabase.from('profiles').upsert({
-        id: userId,
-        username: bot.username,
-        bio: bot.bio,
-        avatar_url: bot.avatar_url,
-      });
-
-      foundMap.set(bot.username, userId);
-      console.log(`✅ @${bot.username} başarıyla eklendi.`);
-    } catch (e: any) {
-      console.error(`✕ @${bot.username} oluşturma hatası:`, e?.message);
-    }
+  if (existingProfile?.id) {
+    return existingProfile.id;
   }
 
-  return foundMap;
+  console.log(`⚡ @${bot.username} profili eksik, sisteme kaydediliyor...`);
+
+  // 2. Auth kullanıcısını oluştur veya mevcut olanın ID'sini al
+  let userId: string | null = null;
+  const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+    email: bot.email,
+    password: 'BotPasswordSecure123!',
+    email_confirm: true,
+    user_metadata: { username: bot.username },
+  });
+
+  if (authData?.user?.id) {
+    userId = authData.user.id;
+  } else if (authError) {
+    // E-posta zaten kayıtlıysa kullanıcı listesinden çek
+    const { data: listData } = await supabase.auth.admin.listUsers();
+    const foundUser = listData?.users?.find((u) => u.email === bot.email);
+    userId = foundUser?.id || null;
+  }
+
+  if (!userId) {
+    console.error(`✕ @${bot.username} için Auth ID alınamadı:`, authError?.message);
+    return null;
+  }
+
+  // 3. Profiles tablosuna ekle / güncelle
+  const { error: profileError } = await supabase.from('profiles').upsert({
+    id: userId,
+    username: bot.username,
+    bio: bot.bio,
+    avatar_url: bot.avatar_url,
+  });
+
+  if (profileError) {
+    console.error(`✕ @${bot.username} profiles tablosuna yazılamadı:`, profileError.message);
+    return null;
+  }
+
+  console.log(`✅ @${bot.username} profili başarıyla oluşturuldu.`);
+  return userId;
 }
 
 async function runEnglishBotFlow() {
@@ -90,7 +91,7 @@ async function runEnglishBotFlow() {
       .limit(1);
 
     if (error || !topics || topics.length === 0) {
-      console.error('❌ Hata: runner_en.ts için işlenecek US/İngilizce başlık bulunamadı!');
+      console.error('❌ Hata: runner_en.ts için işlenecek US başlık bulunamadı!');
       process.exit(1);
     }
     targetTopicId = topics[0].topic_id;
@@ -99,7 +100,6 @@ async function runEnglishBotFlow() {
 
   console.log(`🎯 Hedef US Başlık: #${targetTopicName} (topic_id: ${targetTopicId})`);
 
-  // Mevcut yorumları bağlam (context) olarak al
   const { data: existingEntriesData } = await supabase
     .from('entries')
     .select('entry')
@@ -113,21 +113,19 @@ async function runEnglishBotFlow() {
   const shuffledBots = [...BOT_PERSONAS_EN].sort(() => 0.5 - Math.random());
   const selectedBots: BotPersona[] = shuffledBots.slice(0, Math.min(targetBotCount, shuffledBots.length));
 
-  console.log(`🔍 Seçilen ${selectedBots.length} bot kontrol ediliyor...`);
-  const profileIdMap = await ensureBotsExist(selectedBots);
-
   console.log(`📋 Bu başlığa toplam ${selectedBots.length} bot sırayla İngilizce entry girecek.\n`);
 
   for (let i = 0; i < selectedBots.length; i++) {
     const bot = selectedBots[i];
-    const profileId = profileIdMap.get(bot.username);
+    console.log(`✍️ [${i + 1}/${selectedBots.length}] @${bot.username} hazırlanıyor...`);
+
+    // Profil yoksa anında oluşturup ID'sini döner
+    const profileId = await getOrCreateBotProfileId(bot);
 
     if (!profileId) {
       console.warn(`⚠️ @${bot.username} profili temin edilemedi, geçiliyor.`);
       continue;
     }
-
-    console.log(`✍️ [${i + 1}/${selectedBots.length}] @${bot.username} hazırlanıyor...`);
 
     const generatedText = await generateEntry(targetTopicName!, bot, contextEntries);
     const randomLikes = randomInt(5, 35);
@@ -155,7 +153,7 @@ async function runEnglishBotFlow() {
     }
   }
 
-  console.log(`\n🎉 #${targetTopicName} başlığına ait yorumlar başarıyla tamamlandı!`);
+  console.log(`\n🎉 #${targetTopicName} başlığına ait İngilizce yorumlar başarıyla tamamlandı!`);
 }
 
 runEnglishBotFlow();
