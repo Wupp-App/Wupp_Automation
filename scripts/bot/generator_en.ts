@@ -1,6 +1,5 @@
-
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { BotPersona } from './personas';
+import { BotPersona } from './personas_en';
 
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
 const LOCAL_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:3b';
@@ -9,43 +8,38 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
-// ---------------------------------------------------------------------------
-// DIVERSITY & MOOD POOLS (ENGLISH FORUM CULTURE)
-// Picked randomly on each generation call to vary sentence rhythm and vibe.
-// ---------------------------------------------------------------------------
-
 const MOOD_POOL = [
-  'extremely annoyed, blunt, cynical, short-tempered',
-  'finding it hilarious, treating the whole thing as a meme',
-  'dead serious, genuinely concerned about the long-term impact',
-  'completely indifferent, shrug-emoji energy, "who even cares"',
-  'nostalgic, comparing the current situation to older internet days',
-  'utterly bewildered, baffled by how stupid or absurd this is',
-  'philosophical and reflective, tying it back to human behavior',
-  'energetic, laughing it off with sarcastic banter',
-  'exhausted, tired of seeing this exact discourse repeated',
-  'combative and critical, calling out corporate or user hypocrisy',
-  'curious and inquisitive, trying to get to the bottom of the hype',
-  'unbothered, calm, watching the chaos unfold with popcorn',
+  'annoyed, sarcastic, and impatient with online discourse',
+  'taking it lightly, treating the entire matter as a meme',
+  'serious and concerned about the broader implications',
+  'completely indifferent, shrug-emoji vibe, unbothered',
+  'nostalgic, comparing this with how things used to be',
+  'baffled and amazed by the sheer absurdity of it',
+  'philosophical, connecting the incident to human nature',
+  'energetic and amused, finding humor in the chaos',
+  'exhausted and weary, projecting strong "not this again" energy',
+  'combative, blunt, and calling people out',
+  'curious and inquisitive, trying to understand what is actually going on',
+  'calm and detached, observing the comments from the sidelines',
 ] as const;
 
 const OPENING_STYLE_POOL = [
-  'start directly with an admission/confession (e.g., "Honestly...", "Not gonna lie...")',
+  'start directly with an admission (e.g., "honestly...", "not gonna lie...")',
   'start with a short rhetorical question',
-  'start with a personal anecdote or similar past experience',
-  'start with a sarcastic observation or humorous metaphor',
-  'start with a flat, matter-of-fact summary statement',
-  'start with "Actually," or "In reality,"',
-  'start with immediate disagreement/pushback against the consensus',
-  'start with an exasperated internet sigh (e.g., "Man,", "Classic.", "Here we go again.")',
+  'start with a quick personal anecdote',
+  'start with a sharp, dry remark',
+  'start by comparing this situation to another familiar event',
+  'start with a witty or ironic analogy',
+  'start with a plain, blunt summary sentence',
+  'start with "actually," or "in reality,"',
+  'start by directly pushing back against popular opinion',
+  'start with a short reaction (e.g., "classic.", "here we go again.")',
 ] as const;
 
 function pickRandom<T>(arr: readonly T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// Detects cut-off sentences/words and cleans them up.
-// If no reliable punctuation mark is found within bounds, returns empty to invalidate.
 function fixIncompleteSentence(text: string): string {
   let cleaned = text.trim();
   if (!cleaned) return cleaned;
@@ -61,7 +55,6 @@ function fixIncompleteSentence(text: string): string {
     );
 
     if (lastPunctuation > 15) {
-      // Discard the trailing incomplete fragment and keep only complete sentences
       cleaned = cleaned.substring(0, lastPunctuation + 1).trim();
     } else {
       return '';
@@ -70,13 +63,12 @@ function fixIncompleteSentence(text: string): string {
   return cleaned;
 }
 
-// Calculates word-based Jaccard similarity (0 to 1).
 function textSimilarity(a: string, b: string): number {
   const tokenize = (s: string) =>
     new Set(
       s
         .toLowerCase()
-        .replace(/[^\p{L}\s]/gu, '')
+        .replace(/[^\w\s]/g, '')
         .split(/\s+/)
         .filter((w) => w.length > 2)
     );
@@ -92,7 +84,6 @@ function textSimilarity(a: string, b: string): number {
   return union === 0 ? 0 : intersection / union;
 }
 
-// Checks if the generated comment closely matches any previous comments on the topic.
 function isTooSimilar(candidate: string, existingEntries: string[], threshold = 0.55): boolean {
   return existingEntries.some((e) => textSimilarity(candidate, e) >= threshold);
 }
@@ -188,47 +179,46 @@ async function generateWithOllama(
   }
 }
 
-// Dynamic fallback matrix based on the random mood
 function getFallbackEntry(sentenceCount: number, topicName: string, mood: string): string {
   const cleanTopic = topicName.toLowerCase().replace(/^#/, '');
-  const isFunnyMood = /hilarious|meme|indifferent|laughing|unbothered/.test(mood);
-  const isSeriousMood = /serious|concerned|philosophical|combative|critical/.test(mood);
+  const isFunnyMood = /meme|hilarious|amused|indifferent|detached/.test(mood);
+  const isSeriousMood = /serious|concerned|philosophical|combative/.test(mood);
 
   const openersFunny = [
-    `Honestly, this whole ${cleanTopic} thing is pure comedy at this point.`,
-    `Saw ${cleanTopic} trending and almost spilled my coffee laughing.`,
-    `Classic internet behavior when it comes to ${cleanTopic}.`,
+    `honestly, this whole ${cleanTopic} thing is pure comedy at this point.`,
+    `saw ${cleanTopic} trending and had to double check if this was actual satire.`,
+    `the discussion around ${cleanTopic} has devolved into peak internet entertainment.`,
   ];
   const openersSerious = [
-    `I've been tracking ${cleanTopic} for quite a while now, and the trajectory is pretty alarming.`,
-    `The sheer lack of accountability regarding ${cleanTopic} says everything about where we are heading.`,
-    `People treat ${cleanTopic} like entertainment when it actually has tangible real-world consequences.`,
+    `i have been tracking the ${cleanTopic} situation for a while, and it is genuinely concerning.`,
+    `this is not the first time ${cleanTopic} came up, yet the core problem remains unaddressed.`,
+    `people seem to be ignoring the real implications behind ${cleanTopic}.`,
   ];
   const openersNeutral = [
-    `Not even surprised to see ${cleanTopic} being argued about again.`,
-    `Everyone suddenly has a doctorate in ${cleanTopic} whenever this discussion pops up.`,
+    `not surprised to see ${cleanTopic} making the rounds again.`,
+    `everyone has a strong opinion on ${cleanTopic}, but very few are looking at the facts.`,
   ];
 
   const middles = [
-    `There's clearly an entirely different agenda being pushed behind closed doors.`,
-    `Half of the people commenting haven't even read past the first headline.`,
-    `It's a textbook case of overcomplicating an issue that already has an obvious cause.`,
-    `The funny part is that nobody is asking the one question that actually matters.`,
-    `People will defend their favorite side of this regardless of actual reality.`,
+    `there is clearly a whole layer of context being completely ignored here.`,
+    `half the people arguing have not even bothered to check the background details.`,
+    `it is just another cycle of overreacting to surface-level headlines.`,
+    `the funniest part is how predictable the reactions were going to be.`,
+    `it is always easier to assign blame than to actually understand the nuance.`,
   ];
 
   const thirds = [
-    `What actually happens backstage has zero resemblance to whatever narrative is trending.`,
-    `It genuinely tests your sanity trying to follow the mental gymnastics around here.`,
-    `No need to write a full thesis about it, everyone is going to forget this in two weeks anyway.`,
-    `Can't tell if I should laugh or be frustrated by this whole circus.`,
+    `what is being presented publicly rarely matches what is actually happening behind the scenes.`,
+    `it genuinely tests your patience watching the same tired arguments get recycled.`,
+    `no need for a lengthy breakdown because people will move on to the next topic by next week anyway.`,
+    `hard to tell whether to laugh or just step away from the keyboard on this one.`,
   ];
 
   const closers = [
-    `Either way, grabbed some popcorn and waiting for the dust to settle.`,
-    `Let's see what ridiculous pivot happens next.`,
-    `A quintessential snapshot of modern online discourse.`,
-    `Just my two cents, do with it what you will.`,
+    `anyway, grab some popcorn and let them sort it out.`,
+    `we will see what kind of mental gymnastics come out of this next.`,
+    `pretty much a textbook summary of modern forum discourse.`,
+    `just my two cents on the matter, take it or leave it.`,
   ];
 
   let openerPool = openersNeutral;
@@ -244,7 +234,6 @@ export async function generateEntry(
   persona: BotPersona,
   existingEntries: string[] = []
 ): Promise<string> {
-  // Target sentences: 2 to 5 sentences
   const sentenceTarget = Math.floor(Math.random() * (5 - 2 + 1)) + 2;
 
   const MAX_ATTEMPTS = 3;
@@ -253,46 +242,44 @@ export async function generateEntry(
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const mood = pickRandom(MOOD_POOL);
     const openingStyle = pickRandom(OPENING_STYLE_POOL);
-    const temperature = 0.85 + Math.random() * 0.35; // 0.85 - 1.20
+    const temperature = 0.85 + Math.random() * 0.35;
 
     const systemInstruction = `
-You are a genuine internet user posting on a fast-paced urban dictionary / discussion board (like Reddit, Hacker News, or Urban Dictionary).
+You are a real, authentic commenter on an urban internet discussion board / dictionary platform.
 Username: "${persona.username}".
-General Personality: ${persona.tone || persona.style || 'Cynical, authentic, witty, casual'}.
+General Demeanor: ${persona.tone}.
 Current Mood: ${mood}.
 
-BANNED AI CLICHÉS (DO NOT USE):
-- "In conclusion", "It is worth noting", "At the end of the day", "Underscores the need", "Beacon of hope", "This situation highlights".
-- NO press release style, NO sterile essay tone, NO textbook academic lecturing.
-- Do NOT repeat the topic title verbatim in quotes.
-- Do NOT use Markdown formatting (no asterisks, bolding, italics, or headers).
-- Do NOT copy exact phrasing or metaphors from previous entries; give a unique take.
+BANNED AI CLICHÉS:
+- "in summary", "in conclusion", "it is worth noting", "this situation demonstrates", "a testament to", "underscores the importance", "in my opinion".
+- Formal academic essay tone, press release jargon, or encyclopedic writing is STRICTLY FORBIDDEN.
+- Never repeat the topic title verbatim inside quotes.
+- Do NOT use markdown styling (no bolding, italics, asterisks, bullet points).
+- Do NOT copy exact phrasings or metaphors from previous comments.
 
 RULES:
-1. Sound like a real person casually typing from their phone or laptop. Match the specified mood accurately.
-2. Open your comment like this: ${openingStyle}.
-3. The comment MUST consist of EXACTLY ${sentenceTarget} complete sentences. Not more, not less.
-4. Never leave a sentence half-finished; always end with appropriate punctuation (. ! ? ...).
-5. Offer an authentic, distinct perspective compared to other commenters.
+1. Write like a real forum regular in casual, authentic internet English matching your current mood.
+2. Open your comment following this style: ${openingStyle}.
+3. The response MUST contain EXACTLY ${sentenceTarget} complete sentences. Not more, not less.
+4. Never cut off mid-thought; end with appropriate punctuation.
+5. Offer your own distinct, personal angle on the topic.
 `;
 
     const contextPart =
       existingEntries.length > 0
-        ? `\nWhat other users previously said (do NOT echo these phrases, find a distinct angle):\n- ${existingEntries.slice(-4).join('\n- ')}`
+        ? `\nPrevious user comments (do NOT reuse their phrases or identical takes, find a distinct angle):\n- ${existingEntries.slice(-4).join('\n- ')}`
         : '';
 
-    const userPrompt = `Topic: "${topicName}"${contextPart}\n\nWrite a genuine, authentic comment consisting of exactly ${sentenceTarget} sentences:`;
+    const userPrompt = `Topic: "${topicName}"${contextPart}\n\nWrite an authentic forum entry of exactly ${sentenceTarget} sentences:`;
 
     let text: string | null = null;
 
-    // 1. Groq Models
     const groqModels = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'];
     for (const model of groqModels) {
       text = await generateWithGroq(model, systemInstruction, userPrompt, temperature);
       if (text) break;
     }
 
-    // 2. Gemini Models
     if (!text) {
       const geminiModels = ['gemini-2.5-flash', 'gemini-1.5-flash'];
       for (const gModel of geminiModels) {
@@ -301,17 +288,14 @@ RULES:
       }
     }
 
-    // 3. Ollama Model
     if (!text) {
       text = await generateWithOllama(systemInstruction, userPrompt, temperature);
     }
 
-    // 4. Fallback Matrix
     if (!text) {
       text = getFallbackEntry(sentenceTarget, topicName, mood);
     }
 
-    // Cleaning & punctuation normalization
     let cleanText = text
       .replace(/^["'“”«»]+|["'“”«»]+$/g, '')
       .replace(/^(entry:|comment:|response:)/i, '')
@@ -320,18 +304,15 @@ RULES:
 
     cleanText = fixIncompleteSentence(cleanText);
 
-    // If cut off without salvageable sentences, invalidate and retry
     if (!cleanText || cleanText.length < 10) {
       finalText = null;
       continue;
     }
 
-    // Internet slang touch: 70% chance of starting with lowercase
     if (cleanText.length > 0 && Math.random() > 0.3) {
       cleanText = cleanText.charAt(0).toLowerCase() + cleanText.slice(1);
     }
 
-    // Jaccard similarity filter
     if (!isTooSimilar(cleanText, existingEntries)) {
       finalText = cleanText;
       break;
