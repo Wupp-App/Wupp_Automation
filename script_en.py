@@ -41,7 +41,6 @@ def get_existing_us_topics() -> set:
     """Supabase'de daha önce oluşturulmuş US bölgesine ait başlıkları çeker."""
     cached = set()
     try:
-        # 'en' sütunu yerine şemada var olan 'region' kontrol ediliyor
         res = supabase.table("topics").select("topic_name").eq("region", "US").execute()
         for row in res.data or []:
             name = row.get("topic_name")
@@ -90,9 +89,26 @@ def generate_topic_from_ai() -> str:
     ]
     return english_title(random.choice(fallbacks))
 
+def find_runner_script() -> str:
+    """runner_en.ts dosyasının konumunu çalışma dizinine göre dinamik tespit eder."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    candidates = [
+        os.path.join(base_dir, "scripts", "bot", "runner_en.ts"),
+        os.path.join(base_dir, "bot", "runner_en.ts"),
+        os.path.join(base_dir, "runner_en.ts"),
+        os.path.abspath("scripts/bot/runner_en.ts")
+    ]
+    
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+            
+    # Bulunamazsa varsayılan yolu dön
+    return candidates[0]
+
 def save_and_run(unique_topic: str) -> bool:
     try:
-        # Doğrudan topics tablosundaki 'region' sütununa 'US' yazıyoruz
         payload = {
             "topic_name": unique_topic,
             "region": "US"
@@ -105,13 +121,19 @@ def save_and_run(unique_topic: str) -> bool:
         topic_id = str(res.data[0]["topic_id"])
         print(f"✅ Yeni US başlık oluşturuldu: #{unique_topic} (topic_id: {topic_id})")
 
+        runner_path = find_runner_script()
+        print(f"📂 Çalıştırılacak dosya konumu: {runner_path}")
+
+        if not os.path.exists(runner_path):
+            print(f"❌ HATA: '{runner_path}' dosyası bulunamadı! Lütfen Git'e gönderildiğinden emin olun.")
+            return False
+
         print(f"\n🤖 #{unique_topic} için EN entry botları tetikleniyor...")
         npx_path = shutil.which("npx") or shutil.which("npx.cmd") or "npx"
         use_shell = os.name == "nt"
 
-        # runner_en.ts'i topic_id ve başlık ismi ile başlatıyoruz
         subprocess.run(
-            [npx_path, "tsx", "scripts/bot/runner_en.ts", topic_id, unique_topic],
+            [npx_path, "tsx", runner_path, topic_id, unique_topic],
             shell=use_shell,
             check=True
         )
