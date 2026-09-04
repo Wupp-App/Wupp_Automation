@@ -16,6 +16,7 @@ if (!supabaseUrl || !supabaseKey) {
 const supabase = createClient(supabaseUrl, supabaseKey);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// [min, max] aralığında (dahil) rastgele tam sayı üretir
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
@@ -25,7 +26,7 @@ async function runEnglishBotFlow() {
   let targetTopicId: string | number | null = args[0] ? parseInt(args[0], 10) : null;
   let targetTopicName: string | null = args.slice(1).join(' ') || null;
 
-  // Parametre gelmemişse DB'deki son US başlığını baz al
+  // Eğer script_en.py parametre vermediyse DB'deki son US başlığını baz al
   if (!targetTopicId || !targetTopicName) {
     const { data: topics, error } = await supabase
       .from('topics')
@@ -35,26 +36,25 @@ async function runEnglishBotFlow() {
       .limit(1);
 
     if (error || !topics || topics.length === 0) {
-      console.error('❌ Hata: İşlenecek US/İngilizce başlık bulunamadı.');
+      console.error('❌ Hata: runner_en.ts için işlenecek US/İngilizce başlık bulunamadı!');
       process.exit(1);
     }
     targetTopicId = topics[0].topic_id;
     targetTopicName = topics[0].topic_name;
   }
 
-  console.log(`🎯 [EN Başlık] #${targetTopicName} (topic_id: ${targetTopicId})`);
+  console.log(`🎯 Hedef US Başlık: #${targetTopicName} (topic_id: ${targetTopicId})`);
 
-  // Mevcut entry'leri bağlam (context) olarak al
+  // Mevcut entry'leri bağlam (context) olarak çek
   const { data: existingEntriesData } = await supabase
     .from('entries')
     .select('entry')
     .eq('topic_id', targetTopicId)
     .order('created_at', { ascending: true })
     .limit(15);
-
   const contextEntries: string[] = existingEntriesData?.map((e) => e.entry) || [];
 
-  // İstenen: 10 ile 20 arasında rastgele bot seçimi
+  // İstenen: 10 ile 20 arasında rastgele bot seç
   const targetBotCount = randomInt(10, 20);
   const shuffledBots = [...BOT_PERSONAS_EN].sort(() => 0.5 - Math.random());
   const selectedBots: BotPersona[] = shuffledBots.slice(0, Math.min(targetBotCount, shuffledBots.length));
@@ -76,7 +76,7 @@ async function runEnglishBotFlow() {
       continue;
     }
 
-    // generator_en.ts üzerinden İngilizce yorum üretimi
+    // generator_en.ts üzerinden İngilizce entry üretimi
     const generatedText = await generateEntry(targetTopicName!, bot, contextEntries);
 
     // Her entry için 5 ile 35 arasında rastgele beğeni sayısı
@@ -98,15 +98,15 @@ async function runEnglishBotFlow() {
       contextEntries.push(generatedText);
     }
 
-    // Kota koruması ve doğal akış için bekleme (8-14 saniye)
+    // API kota ve rate-limit koruması: her entry arası 10-18 sn bekleme
     if (i < selectedBots.length - 1) {
-      const waitTimeSec = randomInt(8, 14);
-      console.log(`⏳ Bekleniyor: ${waitTimeSec} sn...\n`);
+      const waitTimeSec = randomInt(10, 18);
+      console.log(`⏳ Kota koruması için ${waitTimeSec} sn bekleniyor...\n`);
       await sleep(waitTimeSec * 1000);
     }
   }
 
-  console.log(`\n🎉 #${targetTopicName} başlığına ait ${selectedBots.length} İngilizce entry başarıyla tamamlandı!`);
+  console.log(`\n🎉 #${targetTopicName} başlığına ait ${selectedBots.length} İngilizce yorum başarıyla tamamlandı!`);
 }
 
 runEnglishBotFlow();
