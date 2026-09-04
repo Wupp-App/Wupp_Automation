@@ -13,7 +13,14 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error('Supabase URL veya Service Role Key eksik!');
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+// Auth Admin işlemlerini yapabilmek için persistSession false olmalıdır
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false,
+  },
+});
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function randomInt(min: number, max: number): number {
@@ -49,7 +56,6 @@ async function getOrCreateBotProfileId(bot: BotPersona): Promise<string | null> 
   if (authData?.user?.id) {
     userId = authData.user.id;
   } else if (authError) {
-    // E-posta zaten kayıtlıysa kullanıcı listesinden çek
     const { data: listData } = await supabase.auth.admin.listUsers();
     const foundUser = listData?.users?.find((u) => u.email === bot.email);
     userId = foundUser?.id || null;
@@ -60,12 +66,16 @@ async function getOrCreateBotProfileId(bot: BotPersona): Promise<string | null> 
     return null;
   }
 
-  // 3. Profiles tablosuna ekle / güncelle
+  // 3. Profiles tablosuna ekle / güncelle (email alanı dahil)
   const { error: profileError } = await supabase.from('profiles').upsert({
     id: userId,
     username: bot.username,
+    email: bot.email,
     bio: bot.bio,
     avatar_url: bot.avatar_url,
+    is_author: true,
+    daily_tokens: 10,
+    tokens_used: 0,
   });
 
   if (profileError) {
