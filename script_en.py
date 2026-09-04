@@ -4,6 +4,7 @@ import sys
 import random
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from groq import Groq
 from supabase import create_client, Client
 
@@ -19,14 +20,29 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 CATEGORIES = [
-    "Tech & Artificial Intelligence Dilemmas",
-    "Modern Workplace & Remote Work Culture",
-    "Digital Privacy & Cybersecurity Quirks",
-    "Pop Culture, Cinema & Underappreciated Shows",
-    "Video Games, Indie Studios & Gaming Nostalgia",
-    "Modern Philosophy, Urban Burnout & Social Media",
-    "Space Exploration & Emerging Science",
-    "Everyday Life Peculiarities & Unpopular Opinions"
+    "Artificial Intelligence Anxiety & Autonomous Agents",
+    "Modern Workplace Fatigue & Asynchronous Work",
+    "Digital Identity, Pseudonyms & Social Privacy",
+    "Streaming Culture, Lost Media & Niche Cinema",
+    "Retro Gaming, Game Engines & Microtransactions",
+    "Urban Solitude, Digital Minimalism & Fast Pace",
+    "Deep Space Exploration & Quantum Breakthroughs",
+    "Subcultures, Forum Vernacular & Unpopular Takes",
+    "Hardware Hacking, Home Servers & Open Source",
+    "Monetization Of Everyday Hobbies"
+]
+
+DYNAMIC_SUBJECTS = [
+    "Software Bloat", "Remote Culture", "Algorithmic Feeds", "Indie Development",
+    "Digital Ownership", "Cloud Dependency", "Subscription Models", "Online Forums",
+    "Speedrunning", "Synthwave Nostalgia", "Microservices", "Smart Appliances",
+    "Cyber Espionage", "Pixel Art", "Ad Blockers", "Curation Algorithms"
+]
+
+DYNAMIC_PREDICATES = [
+    "Is Completely Misunderstood", "Has Reached A Dead End", "Is Quietly Dying",
+    "Needs A Complete Overhaul", "Is The Best Thing In Tech", "Was Better A Decade Ago",
+    "Is Ruining Creative Focus", "Has Become A Total Circus", "Is Facing An Identity Crisis"
 ]
 
 def normalize_text(text: str) -> str:
@@ -47,7 +63,7 @@ def get_existing_us_topics() -> set:
             if name:
                 cached.add(normalize_text(name))
     except Exception as e:
-        print(f"⚠️ Başlık kontrol hatası: {e}")
+        print(f"⚠️ Mevcut başlıkları çekerken hata: {e}")
     return cached
 
 def generate_topic_from_ai() -> str:
@@ -61,7 +77,7 @@ def generate_topic_from_ai() -> str:
         "3. Length must be between 2 to 7 words.\n"
         "4. Tone: Casual, provocative, intriguing, or culturally relatable."
     )
-    user_prompt = f"Create a fresh topic title about: {category}"
+    user_prompt = f"Create a fresh topic title about: {category} (Seed: {random.randint(1000, 9999)})"
 
     if groq_client:
         for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
@@ -75,18 +91,15 @@ def generate_topic_from_ai() -> str:
                     temperature=0.95
                 )
                 text = chat.choices[0].message.content.strip().strip('"\'')
-                if text:
+                if text and len(text) > 3:
                     return english_title(text)
             except Exception:
                 continue
 
-    # API düşerse dinamik sonsuz fallback üretici
-    patterns = [
-        f"The Modern Reality Of {random.choice(['Remote Tech', 'Algorithmic Feeds', 'Indie Devs', 'Urban Loneliness', 'Open Source'])}",
-        f"Why {random.choice(['Binge Watching', 'AAA Games', 'Microservices', 'Clean Code', 'Smart Gadgets'])} Became Exhausting",
-        f"Unpopular Takes On {random.choice(['Modern Cinema', 'Subscription Fatigue', 'Digital Nomadism', 'Social Validation'])}"
-    ]
-    return english_title(random.choice(patterns))
+    # Groq API yanıt vermezse dinamik sonsuz permutasyon üretici
+    subj = random.choice(DYNAMIC_SUBJECTS)
+    pred = random.choice(DYNAMIC_PREDICATES)
+    return english_title(f"Why {subj} {pred}")
 
 def save_and_run(unique_topic: str) -> bool:
     try:
@@ -121,13 +134,16 @@ if __name__ == "__main__":
     existing_topics = get_existing_us_topics()
 
     chosen_topic = None
-    for attempt in range(12):
+    # 20 defa özgün başlık türetmeyi dener
+    for attempt in range(20):
         candidate = generate_topic_from_ai()
         if normalize_text(candidate) not in existing_topics:
             chosen_topic = candidate
             break
 
+    # Havuz dolduysa asla durmaması için dinamik eklemeli başlık oluşturur
     if not chosen_topic:
-        chosen_topic = f"The Unspoken Fatigue Of Modern {random.choice(['Tech', 'Gaming', 'Algorithms', 'Workplaces'])}"
+        month_str = datetime.now(timezone.utc).strftime("%B %Y")
+        chosen_topic = english_title(f"The State Of {random.choice(DYNAMIC_SUBJECTS)} In {month_str}")
 
     save_and_run(chosen_topic)
