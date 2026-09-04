@@ -18,29 +18,29 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 CATEGORIES = [
-    "Artificial Intelligence & Tech Layoffs",
-    "Modern Workplace & Asynchronous Work",
-    "Social Media Brainrot & Short-form Content",
-    "Gaming Industry & Indie Game Renaissance",
-    "Cybersecurity & Digital Surveillance",
-    "Modern Philosophy, Stoicism & Urban Solitude",
-    "Cinema, Forgotten Cult Classics & TV Streaming",
-    "Consumer Electronics & Built-in Obsolescence"
+    "Artificial Intelligence & Autonomous Systems",
+    "Modern Remote Workplace Realities",
+    "Digital Minimalism & Social Feeds",
+    "Indie Game Development & Retro Consoles",
+    "Cybersecurity Threats & Digital Privacy",
+    "Modern Philosophy, Fast Living & Burnout",
+    "Cinema Classics, Hidden Gems & Television",
+    "Consumer Hardware Quirks & Smart Devices"
 ]
 
 def generate_english_topic() -> str:
     timestamp_seed = int(time.time() * 1000)
     category = CATEGORIES[timestamp_seed % len(CATEGORIES)]
-    
+
     system_prompt = (
-        "You are an active curator of a global internet forum/dictionary (like Reddit or Urban Dictionary). "
-        "Generate ONE catchy, provocative, discussion-sparking topic title in English.\n"
+        "You are an active curator of an international discussion forum and urban dictionary. "
+        "Create ONE engaging, debate-worthy, fresh topic title in English.\n"
         "RULES:\n"
-        "1. Output ONLY the topic title text. No quotes, no markdown, no punctuation at the end.\n"
+        "1. Output ONLY the title text. No quotation marks, no ending period, no bullet points.\n"
         "2. Between 2 to 6 words.\n"
-        "3. Title Case format."
+        "3. Standard Title Case."
     )
-    user_prompt = f"Create a fresh, unique topic about: {category}. Unique seed: {timestamp_seed}"
+    user_prompt = f"Topic area: {category}. Unique seed: {timestamp_seed}"
 
     if groq_client:
         for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
@@ -60,37 +60,45 @@ def generate_english_topic() -> str:
                 print(f"⚠️ Groq hatası ({model}): {e}")
                 continue
 
-    # API erişilemezse asla patlamayan benzersiz zaman damgalı fallback
-    return f"The Reality Of {category.split('&')[0].strip()} #{timestamp_seed % 1000}"
+    fallback_topics = [
+        "The Quiet Death Of Pure Online Privacy",
+        "Why Modern Gaming Sequels Keep Disappointing",
+        "Remote Work Is Killing Natural Spontaneity",
+        "The Illusion Of Modern Digital Detox",
+        "Algorithmic Fatigue On Modern Social Feeds"
+    ]
+    return f"{fallback_topics[timestamp_seed % len(fallback_topics)]} #{timestamp_seed % 1000}"
 
-def run():
-    print("🌍 Yeni İngilizce başlık üretiliyor...")
+def main():
+    print("🌍 Yeni İngilizce başlık üretimi başlatılıyor...")
     topic_title = generate_english_topic()
-    print(f"🎯 Üretilen başlık: {topic_title}")
+    print(f"🎯 Belirlenen başlık: {topic_title}")
 
-    # topics tablosuna ekle
     payload = {
         "topic_name": topic_title,
         "region": "US"
     }
+
     res = supabase.table("topics").insert(payload).execute()
-    
     if not res.data:
         print("❌ Başlık Supabase'e eklenemedi!")
         sys.exit(1)
 
     topic_id = str(res.data[0]["topic_id"])
-    print(f"✅ Başlık eklendi: #{topic_title} (topic_id: {topic_id})")
+    print(f"✅ Yeni US başlık eklendi: #{topic_title} (topic_id: {topic_id})")
 
-    # runner_en.ts dosyasını tetikle
-    runner_path = os.path.join("scripts", "bot", "runner_en.ts")
+    # Dosya yolu kontrolü
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    runner_path = os.path.join(script_dir, "scripts", "bot", "runner_en.ts")
     if not os.path.exists(runner_path):
-        runner_path = "runner_en.ts"
+        runner_path = os.path.join(os.getcwd(), "scripts", "bot", "runner_en.ts")
+    if not os.path.exists(runner_path):
+        runner_path = "scripts/bot/runner_en.ts"
 
     npx_path = shutil.which("npx") or shutil.which("npx.cmd") or "npx"
     use_shell = os.name == "nt"
 
-    print(f"\n🤖 #{topic_title} için entry botları başlatılıyor...\n")
+    print(f"\n🤖 #{topic_title} için EN entry botları tetikleniyor...")
     subprocess.run(
         [npx_path, "tsx", runner_path, topic_id, topic_title],
         shell=use_shell,
@@ -98,4 +106,4 @@ def run():
     )
 
 if __name__ == "__main__":
-    run()
+    main()
