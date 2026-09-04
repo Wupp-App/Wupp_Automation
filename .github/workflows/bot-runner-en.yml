@@ -2,7 +2,7 @@ name: Wupp EN Topic & Entry Bot Runner
 
 on:
   schedule:
-    # Her 2 saatte bir çalışır
+    # Her 2 saatte bir çalışır (ihtiyaca göre değiştirebilirsin)
     - cron: '30 */2 * * *'
   workflow_dispatch:
 
