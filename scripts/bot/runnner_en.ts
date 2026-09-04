@@ -32,7 +32,7 @@ async function runEnglishBotFlow() {
     const { data: topics, error } = await supabase
       .from('topics')
       .select('topic_id, topic_name')
-      .eq('en', true)
+      .eq('US', true)
       .order('created_at', { ascending: false })
       .limit(1);
 
