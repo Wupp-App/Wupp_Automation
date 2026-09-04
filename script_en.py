@@ -1,11 +1,9 @@
 import os
 import re
 import sys
-import json
 import random
 import shutil
 import subprocess
-from datetime import datetime, timezone
 from groq import Groq
 from supabase import create_client, Client
 
@@ -39,11 +37,12 @@ def normalize_text(text: str) -> str:
 def english_title(text: str) -> str:
     return text.strip().title()
 
-def get_existing_en_topics() -> set:
-    """Supabase'de daha önce oluşturulmuş İngilizce başlıkları çeker."""
+def get_existing_us_topics() -> set:
+    """Supabase'de daha önce oluşturulmuş US bölgesine ait başlıkları çeker."""
     cached = set()
     try:
-        res = supabase.table("topics").select("topic_name").eq("en", True).execute()
+        # 'en' sütunu yerine şemada var olan 'region' kontrol ediliyor
+        res = supabase.table("topics").select("topic_name").eq("region", "US").execute()
         for row in res.data or []:
             name = row.get("topic_name")
             if name:
@@ -93,10 +92,10 @@ def generate_topic_from_ai() -> str:
 
 def save_and_run(unique_topic: str) -> bool:
     try:
-        # en sütununa True verilerek kaydedilir
+        # Doğrudan topics tablosundaki 'region' sütununa 'US' yazıyoruz
         payload = {
             "topic_name": unique_topic,
-            "en": True
+            "region": "US"
         }
         res = supabase.table("topics").insert(payload).execute()
         if not res.data:
@@ -104,12 +103,13 @@ def save_and_run(unique_topic: str) -> bool:
             return False
 
         topic_id = str(res.data[0]["topic_id"])
-        print(f"✅ Yeni EN başlık oluşturuldu: #{unique_topic} (topic_id: {topic_id})")
+        print(f"✅ Yeni US başlık oluşturuldu: #{unique_topic} (topic_id: {topic_id})")
 
         print(f"\n🤖 #{unique_topic} için EN entry botları tetikleniyor...")
         npx_path = shutil.which("npx") or shutil.which("npx.cmd") or "npx"
         use_shell = os.name == "nt"
 
+        # runner_en.ts'i topic_id ve başlık ismi ile başlatıyoruz
         subprocess.run(
             [npx_path, "tsx", "scripts/bot/runner_en.ts", topic_id, unique_topic],
             shell=use_shell,
@@ -122,7 +122,7 @@ def save_and_run(unique_topic: str) -> bool:
 
 if __name__ == "__main__":
     print("🌍 Yeni İngilizce başlık üretimi başlatılıyor...")
-    existing_topics = get_existing_en_topics()
+    existing_topics = get_existing_us_topics()
 
     chosen_topic = None
     for attempt in range(5):
