@@ -1,12 +1,11 @@
 """
 US güncel konu başlığı üretici — tekrar üretimi engelleyen kalıcı geçmiş sistemi ile.
 
-Değişiklik notu (bu sürüm):
-- Groq, llama-3.3-70b-versatile ve llama-3.1-8b-instant modellerini 16 Ağustos 2026'da
-  decommission etti. Bu iki model artık 404 dönüyor. Yerine Groq'un resmi önerdiği
-  openai/gpt-oss-120b (birincil) ve openai/gpt-oss-20b (fallback) modelleri kullanılıyor.
-  Model isimleri artık ortam değişkeninden de override edilebiliyor, böylece Groq
-  ileride tekrar model değiştirirse kodu değiştirmeden ENV ile düzeltilebilir.
+ÖNEMLİ: Groq, llama-3.3-70b-versatile ve llama-3.1-8b-instant modellerini
+16 Ağustos 2026'da decommission etti (404 model_not_found hatası veriyorlar).
+Bu sürümde model isimleri SABİT olarak openai/gpt-oss-120b ve openai/gpt-oss-20b
+olarak yazılmıştır — env değişkeni override YOKTUR, bu yüzden ortamda unutulmuş
+eski bir env var bu modelleri tekrar bozamaz.
 """
 
 import os
@@ -43,19 +42,13 @@ TODAY_STR = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "scraped_cache_en.json")
 
-# Benzerlik eşiği: bu değerin üstündeki oran "aynı konu" kabul edilir.
 SIMILARITY_THRESHOLD = 0.82
-
-# Bir DB fetch sayfasının satır sayısı
 DB_PAGE_SIZE = 1000
 
 # --------------------------------------------------------------------------
-# Groq model listesi (ENV ile override edilebilir — Groq deprecation'a karşı)
+# Groq model listesi — SABİT, env override yok (bilinçli tercih)
 # --------------------------------------------------------------------------
-GROQ_MODELS = [
-    os.environ.get("GROQ_MODEL_PRIMARY", "openai/gpt-oss-120b"),
-    os.environ.get("GROQ_MODEL_FALLBACK", "openai/gpt-oss-20b"),
-]
+GROQ_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
 
 DYNAMIC_THEMES = [
     "Trending World News & Viral Internet Discourse",
@@ -69,27 +62,19 @@ DYNAMIC_THEMES = [
     "Everyday Urban Dilemmas & Spicy Unpopular Opinions",
 ]
 
-# Title-case'te küçük harfle kalması gereken bağlaç/edat/artikel listesi
 _SMALL_WORDS = {
     "a", "an", "the", "and", "or", "but", "nor", "of", "in", "on", "at",
     "to", "for", "with", "vs", "vs.", "is", "as", "by", "from",
 }
 
 
-# --------------------------------------------------------------------------
-# Metin yardımcı fonksiyonları
-# --------------------------------------------------------------------------
-
 def normalize_text(text: str) -> str:
-    """Karşılaştırma için metni sadeleştirir: küçük harf, noktalama yok, tek boşluk."""
     clean = text.lower()
     clean = re.sub(r"[^\w\s]", "", clean)
     return re.sub(r"\s+", " ", clean).strip()
 
 
 def english_title(text: str) -> str:
-    """Doğru İngilizce başlık formatı: küçük kelimeler (the/of/in vb.)
-    cümle başında/sonunda değilse küçük harfle kalır, diğerleri baş harf büyük."""
     words = text.split()
     if not words:
         return text
@@ -105,7 +90,6 @@ def english_title(text: str) -> str:
 
 
 def is_duplicate(candidate_norm: str, seen: Iterable[str], threshold: float = SIMILARITY_THRESHOLD) -> bool:
-    """Tam eşleşme VEYA yüksek benzerlik oranı varsa True döner."""
     if candidate_norm in seen:
         return True
     for existing in seen:
@@ -115,12 +99,7 @@ def is_duplicate(candidate_norm: str, seen: Iterable[str], threshold: float = SI
     return False
 
 
-# --------------------------------------------------------------------------
-# Kalıcı geçmiş dosyası (atomik okuma/yazma)
-# --------------------------------------------------------------------------
-
 def load_history_cache() -> set:
-    """Geçmişte üretilen TÜM başlıkları kalıcı dosyadan yükler."""
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
@@ -135,7 +114,6 @@ def load_history_cache() -> set:
 
 
 def save_to_history_cache(normalized_topics: list) -> None:
-    """Yeni başlıkları kalıcı geçmiş dosyasına atomik olarak kaydeder."""
     current_history = load_history_cache()
     current_history.update(normalized_topics)
 
@@ -144,19 +122,14 @@ def save_to_history_cache(normalized_topics: list) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump({"all_time_topics": sorted(current_history)}, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, HISTORY_FILE)  # atomik değiştirme
+        os.replace(tmp_path, HISTORY_FILE)
     except Exception as e:
         print(f"⚠️ Geçmiş dosyası yazma hatası: {e}")
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
 
-# --------------------------------------------------------------------------
-# Veritabanı
-# --------------------------------------------------------------------------
-
 def get_all_db_topics() -> set:
-    """Veritabanındaki US bölgesine ait TÜM başlıkları sayfalayarak çeker."""
     db_topics = set()
     offset = 0
     try:
@@ -181,12 +154,7 @@ def get_all_db_topics() -> set:
     return db_topics
 
 
-# --------------------------------------------------------------------------
-# LLM ile aday üretim
-# --------------------------------------------------------------------------
-
 def generate_candidate_topics(excluded_samples: list, theme: str, temperature: float = 0.9) -> list:
-    """Modelden geçmişte konuşulmamış, güncel trendleri yansıtan taze başlıklar ister."""
     candidates: list = []
 
     if not groq_client:
@@ -264,10 +232,6 @@ def format_title_with_ai(topic: str) -> str:
     return english_title(topic)
 
 
-# --------------------------------------------------------------------------
-# Bot senkronizasyonu ve kayıt
-# --------------------------------------------------------------------------
-
 def ensure_bots_synced() -> None:
     try:
         res = supabase.table("profiles").select("id").eq("username", "alexmiller").maybe_single().execute()
@@ -283,9 +247,6 @@ def ensure_bots_synced() -> None:
 
 
 def save_and_run(unique_topic: str) -> bool:
-    """Başlığı DB'ye yazar ve entry botlarını tetikler.
-    Eşzamanlı bir başka çalıştırma aynı başlığı aynı anda eklerse
-    (unique constraint çakışması), bunu ayrı bir hata olarak ele alır."""
     try:
         ensure_bots_synced()
 
@@ -321,13 +282,9 @@ def save_and_run(unique_topic: str) -> bool:
         return False
 
 
-# --------------------------------------------------------------------------
-# Ana akış
-# --------------------------------------------------------------------------
-
 def main() -> None:
     print(f"🔍 [{TODAY_STR}] Güncel trendler ve dinamik İngilizce başlıklar taranıyor...")
-    print(f"ℹ️ Kullanılacak Groq modelleri (sırayla): {GROQ_MODELS}")
+    print(f"ℹ️ Kullanılacak Groq modelleri (sabit, sırayla): {GROQ_MODELS}")
 
     if not groq_client:
         print("❌ HATA: GROQ_API_KEY tanımlı değil, başlık üretilemez.")
