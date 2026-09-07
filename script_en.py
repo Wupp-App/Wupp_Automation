@@ -1,25 +1,12 @@
 """
 US güncel konu başlığı üretici — tekrar üretimi engelleyen kalıcı geçmiş sistemi ile.
 
-Önceki sürüme göre değişiklikler:
-1. Geçmiş sadece "tam eşleşme" (normalize edilmiş string) ile değil, ayrıca
-   difflib ile "anlamsal/yazımsal benzerlik" oranına göre de kontrol ediliyor.
-   Böylece "AI Job Losses" ile "Job Losses From AI" gibi neredeyse aynı
-   başlıklar da tekrar üretilmiş sayılıyor.
-2. DB'den başlık çekerken sayfalama (pagination) eklendi — Supabase varsayılan
-   olarak tek seferde ~1000 satırla sınırlı, üstüne çıkan projelerde eski
-   sürüm sessizce eksik veri çekiyordu.
-3. Geçmiş dosyası artık atomik yazılıyor (tmp dosyaya yaz + rename) — script
-   çalışırken kesilirse dosya bozulmuyor.
-4. Başlık büyük/küçük harf normalizasyonu düzgün "title case" kurallarına
-   göre yapılıyor (the/of/in/a gibi küçük kelimeler cümle başında değilse
-   küçük kalıyor).
-5. Aday üretim döngüsü: her denemede birden fazla tema karışık kullanılıyor,
-   başarısız denemelerde model sıcaklığı ve tema seçimi değiştiriliyor.
-6. Daha ayrıntılı ve tutarlı loglama + tip belirteçleri (type hints).
-7. Supabase insert'inde eşzamanlı çalışan başka bir instance aynı başlığı
-   aynı anda eklemeye çalışırsa oluşabilecek "unique constraint" hatası
-   yakalanıp yeniden deneme yapılıyor.
+Değişiklik notu (bu sürüm):
+- Groq, llama-3.3-70b-versatile ve llama-3.1-8b-instant modellerini 16 Ağustos 2026'da
+  decommission etti. Bu iki model artık 404 dönüyor. Yerine Groq'un resmi önerdiği
+  openai/gpt-oss-120b (birincil) ve openai/gpt-oss-20b (fallback) modelleri kullanılıyor.
+  Model isimleri artık ortam değişkeninden de override edilebiliyor, böylece Groq
+  ileride tekrar model değiştirirse kodu değiştirmeden ENV ile düzeltilebilir.
 """
 
 import os
@@ -57,11 +44,18 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "scraped_cache_en.json")
 
 # Benzerlik eşiği: bu değerin üstündeki oran "aynı konu" kabul edilir.
-# 1.0 = birebir aynı metin, 0.0 = alakasız. 0.82 pratikte iyi bir denge noktası.
 SIMILARITY_THRESHOLD = 0.82
 
-# Bir DB fetch sayfasının satır sayısı (Supabase/PostgREST varsayılan limiti aşmamak için)
+# Bir DB fetch sayfasının satır sayısı
 DB_PAGE_SIZE = 1000
+
+# --------------------------------------------------------------------------
+# Groq model listesi (ENV ile override edilebilir — Groq deprecation'a karşı)
+# --------------------------------------------------------------------------
+GROQ_MODELS = [
+    os.environ.get("GROQ_MODEL_PRIMARY", "openai/gpt-oss-120b"),
+    os.environ.get("GROQ_MODEL_FALLBACK", "openai/gpt-oss-20b"),
+]
 
 DYNAMIC_THEMES = [
     "Trending World News & Viral Internet Discourse",
@@ -195,9 +189,10 @@ def generate_candidate_topics(excluded_samples: list, theme: str, temperature: f
     """Modelden geçmişte konuşulmamış, güncel trendleri yansıtan taze başlıklar ister."""
     candidates: list = []
 
-    # Geçmişin tamamını prompta sığdırmak imkansız; en güncel örnekleri gösteriyoruz.
-    # Ayrıca rastgele bir örneklem ekleyerek modelin sadece "son eklenenler"
-    # etrafında dönmesini engelliyoruz.
+    if not groq_client:
+        print("  ↳ ⚠️ GROQ_API_KEY tanımlı değil, model çağrısı atlanıyor.")
+        return candidates
+
     recent = excluded_samples[-40:]
     older_sample = random.sample(excluded_samples[:-40], min(20, max(0, len(excluded_samples) - 40))) \
         if len(excluded_samples) > 40 else []
@@ -219,25 +214,24 @@ def generate_candidate_topics(excluded_samples: list, theme: str, temperature: f
         "Focus on current events, trending phenomena, modern societal shifts, or real-time internet debates."
     )
 
-    if groq_client:
-        for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
-            try:
-                chat = groq_client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=temperature,
-                )
-                raw_text = chat.choices[0].message.content.strip()
-                lines = [re.sub(r"^\d+[\.\)]\s*", "", line).strip() for line in raw_text.split("\n") if line.strip()]
-                candidates.extend([line for line in lines if line])
-                if candidates:
-                    break
-            except Exception as e:
-                print(f"⚠️ Groq üretim hatası ({model}): {e}")
-                continue
+    for model in GROQ_MODELS:
+        try:
+            chat = groq_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+            )
+            raw_text = chat.choices[0].message.content.strip()
+            lines = [re.sub(r"^\d+[\.\)]\s*", "", line).strip() for line in raw_text.split("\n") if line.strip()]
+            candidates.extend([line for line in lines if line])
+            if candidates:
+                break
+        except Exception as e:
+            print(f"⚠️ Groq üretim hatası ({model}): {e}")
+            continue
 
     return candidates
 
@@ -251,7 +245,7 @@ def format_title_with_ai(topic: str) -> str:
     user_prompt = f"Format this topic: '{topic}'"
 
     if groq_client:
-        for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+        for model in GROQ_MODELS:
             try:
                 chat = groq_client.chat.completions.create(
                     model=model,
@@ -333,6 +327,11 @@ def save_and_run(unique_topic: str) -> bool:
 
 def main() -> None:
     print(f"🔍 [{TODAY_STR}] Güncel trendler ve dinamik İngilizce başlıklar taranıyor...")
+    print(f"ℹ️ Kullanılacak Groq modelleri (sırayla): {GROQ_MODELS}")
+
+    if not groq_client:
+        print("❌ HATA: GROQ_API_KEY tanımlı değil, başlık üretilemez.")
+        sys.exit(1)
 
     history_topics = load_history_cache()
     db_topics = get_all_db_topics()
@@ -344,12 +343,10 @@ def main() -> None:
     used_themes: list = []
 
     for attempt in range(1, max_retries + 1):
-        # Aynı temayı art arda denememek için henüz kullanılmamış bir tema seç
         remaining_themes = [t for t in DYNAMIC_THEMES if t not in used_themes] or DYNAMIC_THEMES
         theme = random.choice(remaining_themes)
         used_themes.append(theme)
 
-        # Denemeler ilerledikçe biraz daha yüksek sıcaklık dene (çeşitlilik artsın)
         temperature = min(0.6 + attempt * 0.05, 1.0)
 
         print(f"🔄 Deneme {attempt}/{max_retries}: '{theme}' teması için taze başlık adayları üretiliyor (t={temperature:.2f})...")
@@ -371,7 +368,6 @@ def main() -> None:
                 all_seen_topics.add(norm_formatted)
                 continue
 
-            # Tamamen benzersiz taze başlık yakalandı
             found_unique_topic = formatted
             all_seen_topics.add(norm_cand)
             all_seen_topics.add(norm_formatted)
