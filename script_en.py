@@ -1,11 +1,6 @@
 """
-US güncel konu başlığı üretici — tekrar üretimi engelleyen kalıcı geçmiş sistemi ile.
-
-ÖNEMLİ: Groq, llama-3.3-70b-versatile ve llama-3.1-8b-instant modellerini
-16 Ağustos 2026'da decommission etti (404 model_not_found hatası veriyorlar).
-Bu sürümde model isimleri SABİT olarak openai/gpt-oss-120b ve openai/gpt-oss-20b
-olarak yazılmıştır — env değişkeni override YOKTUR, bu yüzden ortamda unutulmuş
-eski bir env var bu modelleri tekrar bozamaz.
+US güncel konu başlığı üretici — dinamik model keşfi, çoklu fallback ve 
+tekrar üretimi engelleyen kalıcı geçmiş sistemi ile.
 """
 
 import os
@@ -18,7 +13,7 @@ import difflib
 import tempfile
 import subprocess
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Iterable, List
 
 from groq import Groq
 from supabase import create_client, Client
@@ -46,9 +41,45 @@ SIMILARITY_THRESHOLD = 0.82
 DB_PAGE_SIZE = 1000
 
 # --------------------------------------------------------------------------
-# Groq model listesi — SABİT, env override yok (bilinçli tercih)
+# Groq Model Havuzu & Dinamik Keşif Fonksiyonu
 # --------------------------------------------------------------------------
-GROQ_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+
+DEFAULT_FALLBACK_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "llama-3.1-8b-instant",
+    "gemma2-9b-it",
+    "mixtral-8x7b-32768",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+]
+
+
+def get_available_groq_models(client: Groq) -> List[str]:
+    """Hesabın o an erişebildiği tüm aktif metin tamamlama modellerini çeker."""
+    try:
+        response = client.models.list()
+        active_ids = {m.id for m in response.data if not getattr(m, "deprecated", False)}
+
+        # Öncelikli modellerden hesapta aktif olanları başa al
+        ordered = [m for m in DEFAULT_FALLBACK_MODELS if m in active_ids]
+        # Whisper, vision veya ses modellerini hariç tutarak kalan metin modellerini ekle
+        excluded_keywords = ("whisper", "tts", "audio", "vision")
+        remaining = [
+            m for m in active_ids
+            if m not in ordered and not any(kw in m.lower() for kw in excluded_keywords)
+        ]
+
+        final_models = ordered + remaining
+        if final_models:
+            return final_models
+    except Exception as e:
+        print(f"⚠️ Dinamik model listesi alınamadı, yedek listeye dönülüyor: {e}")
+
+    return DEFAULT_FALLBACK_MODELS
+
+
+GROQ_MODELS = get_available_groq_models(groq_client) if groq_client else DEFAULT_FALLBACK_MODELS
 
 DYNAMIC_THEMES = [
     "Trending World News & Viral Internet Discourse",
@@ -194,8 +225,9 @@ def generate_candidate_topics(excluded_samples: list, theme: str, temperature: f
             )
             raw_text = chat.choices[0].message.content.strip()
             lines = [re.sub(r"^\d+[\.\)]\s*", "", line).strip() for line in raw_text.split("\n") if line.strip()]
-            candidates.extend([line for line in lines if line])
-            if candidates:
+            valid_lines = [line for line in lines if line]
+            if valid_lines:
+                candidates.extend(valid_lines)
                 break
         except Exception as e:
             print(f"⚠️ Groq üretim hatası ({model}): {e}")
@@ -284,7 +316,7 @@ def save_and_run(unique_topic: str) -> bool:
 
 def main() -> None:
     print(f"🔍 [{TODAY_STR}] Güncel trendler ve dinamik İngilizce başlıklar taranıyor...")
-    print(f"ℹ️ Kullanılacak Groq modelleri (sabit, sırayla): {GROQ_MODELS}")
+    print(f"ℹ️ Kullanılabilir Groq modelleri: {GROQ_MODELS}")
 
     if not groq_client:
         print("❌ HATA: GROQ_API_KEY tanımlı değil, başlık üretilemez.")
