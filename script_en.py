@@ -1,6 +1,6 @@
 """
-US güncel konu başlığı üretici — dinamik model keşfi, çoklu fallback ve 
-tekrar üretimi engelleyen kalıcı geçmiş sistemi ile.
+US güncel konu başlığı üretici — Multi-Provider (Gemini + Groq + OpenAI) Failover Engine.
+Groq modelleri çökerse otomatik olarak Google Gemini'ye, o da olmazsa OpenAI'a geçer.
 """
 
 import os
@@ -12,19 +12,25 @@ import shutil
 import difflib
 import tempfile
 import subprocess
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 from groq import Groq
 from supabase import create_client, Client
 
+print("🚀 ÇOKLU SAĞLAYICI MOTORU BAŞLATILDI (Gemini / Groq / OpenAI Fallback)")
+
 # --------------------------------------------------------------------------
-# Ortam değişkenleri / istemciler
+# Ortam değişkenleri & İstemciler
 # --------------------------------------------------------------------------
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("❌ HATA: Supabase URL veya KEY eksik!")
@@ -41,45 +47,22 @@ SIMILARITY_THRESHOLD = 0.82
 DB_PAGE_SIZE = 1000
 
 # --------------------------------------------------------------------------
-# Groq Model Havuzu & Dinamik Keşif Fonksiyonu
+# Model Listeleri
 # --------------------------------------------------------------------------
 
-DEFAULT_FALLBACK_MODELS = [
+GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
+
+GROQ_FALLBACK_MODELS = [
     "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
     "llama-3.1-8b-instant",
     "gemma2-9b-it",
     "mixtral-8x7b-32768",
-    "llama3-70b-8192",
-    "llama3-8b-8192",
 ]
-
-
-def get_available_groq_models(client: Groq) -> List[str]:
-    """Hesabın o an erişebildiği tüm aktif metin tamamlama modellerini çeker."""
-    try:
-        response = client.models.list()
-        active_ids = {m.id for m in response.data if not getattr(m, "deprecated", False)}
-
-        # Öncelikli modellerden hesapta aktif olanları başa al
-        ordered = [m for m in DEFAULT_FALLBACK_MODELS if m in active_ids]
-        # Whisper, vision veya ses modellerini hariç tutarak kalan metin modellerini ekle
-        excluded_keywords = ("whisper", "tts", "audio", "vision")
-        remaining = [
-            m for m in active_ids
-            if m not in ordered and not any(kw in m.lower() for kw in excluded_keywords)
-        ]
-
-        final_models = ordered + remaining
-        if final_models:
-            return final_models
-    except Exception as e:
-        print(f"⚠️ Dinamik model listesi alınamadı, yedek listeye dönülüyor: {e}")
-
-    return DEFAULT_FALLBACK_MODELS
-
-
-GROQ_MODELS = get_available_groq_models(groq_client) if groq_client else DEFAULT_FALLBACK_MODELS
 
 DYNAMIC_THEMES = [
     "Trending World News & Viral Internet Discourse",
@@ -98,6 +81,112 @@ _SMALL_WORDS = {
     "to", "for", "with", "vs", "vs.", "is", "as", "by", "from",
 }
 
+# --------------------------------------------------------------------------
+# Multi-Provider AI Çağrı Fonksiyonları
+# --------------------------------------------------------------------------
+
+def call_gemini_api(model: str, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[str]:
+    """Gemini REST API'sini doğrudan HTTP ile çağırır (Ek kütüphane gerektirmez)."""
+    if not GEMINI_API_KEY:
+        return None
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"parts": [{"text": user_prompt}]}],
+        "generationConfig": {"temperature": temperature, "maxOutputTokens": 800}
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            return res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        print(f"⚠️ Gemini API hatası ({model}): {e}")
+        return None
+
+
+def call_groq_api(model: str, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[str]:
+    """Groq API üzerinden çağrı yapar."""
+    if not groq_client:
+        return None
+    try:
+        chat = groq_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=temperature,
+        )
+        return chat.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"⚠️ Groq API hatası ({model}): {e}")
+        return None
+
+
+def call_openai_api(system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[str]:
+    """OpenAI API üzerinden çağrı yapar (opsiyonel son çare)."""
+    if not OPENAI_API_KEY:
+        return None
+    url = "https://api.openai.com/v1/chat/completions"
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": temperature
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENAI_API_KEY}"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            return res_data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"⚠️ OpenAI API hatası: {e}")
+        return None
+
+
+def execute_llm_chain(system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[str]:
+    """Sırasıyla Gemini, Groq ve OpenAI'ı dener; ilk başarılı olanın sonucunu döner."""
+    # 1. Aşama: Google Gemini Modelleri
+    if GEMINI_API_KEY:
+        for model in GEMINI_MODELS:
+            res = call_gemini_api(model, system_prompt, user_prompt, temperature)
+            if res:
+                return res
+
+    # 2. Aşama: Groq Modelleri
+    if GROQ_API_KEY:
+        for model in GROQ_FALLBACK_MODELS:
+            res = call_groq_api(model, system_prompt, user_prompt, temperature)
+            if res:
+                return res
+
+    # 3. Aşama: OpenAI
+    if OPENAI_API_KEY:
+        res = call_openai_api(system_prompt, user_prompt, temperature)
+        if res:
+            return res
+
+    return None
+
+# --------------------------------------------------------------------------
+# Metin Temizleme ve Benzerlik Kontrolleri
+# --------------------------------------------------------------------------
 
 def normalize_text(text: str) -> str:
     clean = text.lower()
@@ -184,14 +273,11 @@ def get_all_db_topics() -> set:
         print(f"⚠️ DB kontrol hatası: {e}")
     return db_topics
 
+# --------------------------------------------------------------------------
+# Aday Başlık Üretimi & Formatlama
+# --------------------------------------------------------------------------
 
 def generate_candidate_topics(excluded_samples: list, theme: str, temperature: float = 0.9) -> list:
-    candidates: list = []
-
-    if not groq_client:
-        print("  ↳ ⚠️ GROQ_API_KEY tanımlı değil, model çağrısı atlanıyor.")
-        return candidates
-
     recent = excluded_samples[-40:]
     older_sample = random.sample(excluded_samples[:-40], min(20, max(0, len(excluded_samples) - 40))) \
         if len(excluded_samples) > 40 else []
@@ -213,27 +299,12 @@ def generate_candidate_topics(excluded_samples: list, theme: str, temperature: f
         "Focus on current events, trending phenomena, modern societal shifts, or real-time internet debates."
     )
 
-    for model in GROQ_MODELS:
-        try:
-            chat = groq_client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=temperature,
-            )
-            raw_text = chat.choices[0].message.content.strip()
-            lines = [re.sub(r"^\d+[\.\)]\s*", "", line).strip() for line in raw_text.split("\n") if line.strip()]
-            valid_lines = [line for line in lines if line]
-            if valid_lines:
-                candidates.extend(valid_lines)
-                break
-        except Exception as e:
-            print(f"⚠️ Groq üretim hatası ({model}): {e}")
-            continue
+    raw_text = execute_llm_chain(system_prompt, user_prompt, temperature)
+    if not raw_text:
+        return []
 
-    return candidates
+    lines = [re.sub(r"^\d+[\.\)]\s*", "", line).strip() for line in raw_text.split("\n") if line.strip()]
+    return [line for line in lines if line]
 
 
 def format_title_with_ai(topic: str) -> str:
@@ -244,23 +315,10 @@ def format_title_with_ai(topic: str) -> str:
     )
     user_prompt = f"Format this topic: '{topic}'"
 
-    if groq_client:
-        for model in GROQ_MODELS:
-            try:
-                chat = groq_client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=0.6,
-                )
-                text = chat.choices[0].message.content.strip().strip("\"'")
-                if text:
-                    return english_title(text)
-            except Exception as e:
-                print(f"⚠️ Groq format hatası ({model}): {e}")
-                continue
+    formatted_text = execute_llm_chain(system_prompt, user_prompt, temperature=0.5)
+    if formatted_text:
+        clean = formatted_text.strip().strip("\"'")
+        return english_title(clean)
     return english_title(topic)
 
 
@@ -315,11 +373,18 @@ def save_and_run(unique_topic: str) -> bool:
 
 
 def main() -> None:
-    print(f"🔍 [{TODAY_STR}] Güncel trendler ve dinamik İngilizce başlıklar taranıyor...")
-    print(f"ℹ️ Kullanılabilir Groq modelleri: {GROQ_MODELS}")
+    print(f"🔍 [{TODAY_STR}] Güncel trendler taranıyor...")
+    
+    # Hangi anahtarların mevcut olduğunu kontrol et
+    available_providers = []
+    if GEMINI_API_KEY: available_providers.append("Google Gemini")
+    if GROQ_API_KEY: available_providers.append("Groq")
+    if OPENAI_API_KEY: available_providers.append("OpenAI")
+    
+    print(f"ℹ️ Aktif AI Sağlayıcıları: {', '.join(available_providers) if available_providers else 'Hiçbiri bulunamadı!'}")
 
-    if not groq_client:
-        print("❌ HATA: GROQ_API_KEY tanımlı değil, başlık üretilemez.")
+    if not available_providers:
+        print("❌ HATA: GEMINI_API_KEY veya GROQ_API_KEY ortam değişkeni tanımlı değil!")
         sys.exit(1)
 
     history_topics = load_history_cache()
@@ -337,12 +402,12 @@ def main() -> None:
         used_themes.append(theme)
 
         temperature = min(0.6 + attempt * 0.05, 1.0)
-
-        print(f"🔄 Deneme {attempt}/{max_retries}: '{theme}' teması için taze başlık adayları üretiliyor (t={temperature:.2f})...")
+        print(f"🔄 Deneme {attempt}/{max_retries}: '{theme}' teması işleniyor (t={temperature:.2f})...")
+        
         candidates = generate_candidate_topics(list(all_seen_topics), theme, temperature)
 
         if not candidates:
-            print("  ↳ Model aday üretemedi, sonraki denemeye geçiliyor.")
+            print("  ↳ Hiçbir AI sağlayıcısı aday üretemedi, sonraki denemeye geçiliyor.")
             continue
 
         for candidate in candidates:
