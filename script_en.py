@@ -22,17 +22,18 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_FILE = os.path.join(SCRIPT_DIR, "scraped_cache_en.json")
+HISTORY_FILE = os.path.join(SCRIPT_DIR, "scraped_cache_en.json")
 
-CATEGORIES = [
-    "Tech & Artificial Intelligence Dilemmas",
-    "Modern Workplace & Remote Work Culture",
-    "Digital Privacy & Cybersecurity Quirks",
-    "Pop Culture, Cinema & Underappreciated Shows",
-    "Video Games, Indie Studios & Gaming Nostalgia",
-    "Modern Philosophy, Urban Burnout & Social Media",
-    "Space Exploration & Emerging Science",
-    "Everyday Life Peculiarities & Unpopular Opinions"
+DYNAMIC_THEMES = [
+    "Trending World News & Viral Internet Discourse",
+    "Cutting-Edge AI Breakthroughs, Controversies & Ethics",
+    "Current Workplace Culture, Layoffs, Return-to-Office & Gig Economy",
+    "Current Pop Culture, Streaming Releases, Celebrity Drama & Box Office",
+    "Modern Gaming Trends, Live-Service Fatigue & Industry Shifts",
+    "Global Economy, Cost of Living Crises & Gen-Z Survival Strategies",
+    "Social Media Algorithms, Brainrot Culture & Attention Economy",
+    "Emerging Tech, Electric Vehicles, Biotech & Space Milestones",
+    "Everyday Urban Dilemmas & Spicy Unpopular Opinions"
 ]
 
 def normalize_text(text: str) -> str:
@@ -43,64 +44,77 @@ def normalize_text(text: str) -> str:
 def english_title(text: str) -> str:
     return " ".join([w.capitalize() for w in text.split()])
 
-def load_scraped_cache() -> dict:
-    if os.path.exists(CACHE_FILE):
+def load_history_cache() -> set:
+    """Geçmişte üretilen TÜM başlıkları kalıcı dosyadan yükler."""
+    if os.path.exists(HISTORY_FILE):
         try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if data.get("date") == TODAY_STR:
-                    return data
-        except Exception:
-            pass
-    return {"date": TODAY_STR, "topics": []}
+                if isinstance(data, list):
+                    return set(data)
+                elif isinstance(data, dict):
+                    return set(data.get("all_time_topics", []))
+        except Exception as e:
+            print(f"⚠️ Geçmiş dosyası okuma uyarısı: {e}")
+    return set()
 
-def save_to_scraped_cache(raw_topic: str):
-    data = load_scraped_cache()
-    norm = normalize_text(raw_topic)
-    if norm not in data["topics"]:
-        data["topics"].append(norm)
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+def save_to_history_cache(normalized_topics: list):
+    """Yeni başlıkları kalıcı geçmiş dosyasına kaydeder."""
+    current_history = load_history_cache()
+    current_history.update(normalized_topics)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump({"all_time_topics": sorted(list(current_history))}, f, ensure_ascii=False, indent=2)
 
-def get_today_topics_from_db() -> set:
+def get_all_db_topics() -> set:
+    """Veritabanındaki US bölgesine ait tüm başlıkları çeker."""
     db_topics = set()
     try:
-        start_of_day = f"{TODAY_STR}T00:00:00+00:00"
-        entries_res = supabase.table("entries").select("topic_id").execute()
-        valid_topic_ids = {row["topic_id"] for row in entries_res.data or []}
-
         res = (
             supabase.table("topics")
-            .select("topic_id, topic_name, created_at")
+            .select("topic_name")
             .eq("region", "US")
-            .gte("created_at", start_of_day)
             .execute()
         )
         for row in res.data or []:
             name = row.get("topic_name", "")
-            if name and row.get("topic_id") in valid_topic_ids:
+            if name:
                 db_topics.add(normalize_text(name))
     except Exception as e:
         print(f"⚠️ DB kontrol hatası: {e}")
     return db_topics
 
-def generate_candidate_topics() -> list:
+def generate_candidate_topics(excluded_samples: list) -> list:
+    """Modelden geçmişte konuşulmamış, güncel trendleri yansıtan 5 taze başlık ister."""
     candidates = []
-    category = random.choice(CATEGORIES)
+    theme = random.choice(DYNAMIC_THEMES)
+    
+    past_topics_snippet = "\n".join([f"- {t}" for t in excluded_samples[-30:]]) if excluded_samples else "None"
+
     system_prompt = (
-        "You are an active curator for an international urban discussion board. "
-        "Generate 5 distinct, catchy, discussion-worthy topic titles in English.\n"
-        "RULES:\n1. Output ONLY the titles, separated by newlines.\n2. No numbers, no bullet points, no quotes.\n3. 2 to 7 words per title."
+        "You are an active cultural curator and internet forum trend analyst. "
+        "Your job is to identify high-engagement, trending, controversial, or culturally relevant discussions happening right now.\n"
+        "RULES:\n"
+        "1. Output ONLY the titles, separated by newlines.\n"
+        "2. No numbers, no bullet points, no quotes.\n"
+        "3. 2 to 7 words per title.\n"
+        "4. DO NOT repeat or derive from these recently covered topics:\n"
+        f"{past_topics_snippet}"
     )
-    user_prompt = f"Generate 5 engaging topic titles about: {category}"
+    user_prompt = (
+        f"Generate 5 distinct, viral-ready, or highly debated discussion topic titles in English related to: '{theme}'. "
+        "Focus on current events, trending phenomena, modern societal shifts, or real-time internet debates."
+    )
 
     if groq_client:
         for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
             try:
                 chat = groq_client.chat.completions.create(
                     model=model,
-                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-                    temperature=0.85
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.9
                 )
                 raw_text = chat.choices[0].message.content.strip()
                 lines = [re.sub(r"^\d+[\.\)]\s*", "", line).strip() for line in raw_text.split("\n") if line.strip()]
@@ -110,17 +124,9 @@ def generate_candidate_topics() -> list:
             except Exception:
                 continue
 
-    if not candidates:
-        candidates = [
-            "The Illusion Of Modern Digital Detox",
-            "Why Video Game Sequels Keep Disappointing",
-            "The Silent Death Of True Online Privacy",
-            "Working Remotely Is Ruining Spontaneity",
-            "Overrated Masterpieces In Modern Cinema"
-        ]
     return candidates
 
-def get_unique_topic_from_ai(topic: str) -> str:
+def format_title_with_ai(topic: str) -> str:
     system_prompt = (
         "You are an experienced forum moderator. Format and polish the given English topic title.\n"
         "1. Do NOT explain anything. Output ONLY the title.\n"
@@ -133,8 +139,11 @@ def get_unique_topic_from_ai(topic: str) -> str:
             try:
                 chat = groq_client.chat.completions.create(
                     model=model,
-                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-                    temperature=0.7
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.6
                 )
                 text = chat.choices[0].message.content.strip().strip('"\'')
                 if text:
@@ -144,12 +153,11 @@ def get_unique_topic_from_ai(topic: str) -> str:
     return english_title(topic)
 
 def ensure_bots_synced():
-    """Veritabanında İngilizce botların varlığını kontrol eder, yoksa initBots_en.ts'i çalıştırır."""
     try:
         res = supabase.table("profiles").select("id").eq("username", "alexmiller").maybe_single().execute()
         if not res or not res.data:
             print("⚡ İngilizce bot hesapları DB'de bulunamadı! Otomatik senkronize ediliyor...")
-            npx = shutil.which("npx") or "npx"
+            npx = shutil.which("npx") or shutil.which("npx.cmd") or "npx"
             use_shell = os.name == "nt"
             init_script = os.path.join("scripts", "bot", "initBots_en.ts")
             subprocess.run([npx, "tsx", init_script], shell=use_shell, check=True)
@@ -157,7 +165,7 @@ def ensure_bots_synced():
     except Exception as e:
         print(f"⚠️ Bot senkronizasyon kontrolü uyarısı: {e}")
 
-def save_and_run(original_topic: str, unique_topic: str) -> bool:
+def save_and_run(unique_topic: str) -> bool:
     try:
         ensure_bots_synced()
 
@@ -168,7 +176,6 @@ def save_and_run(original_topic: str, unique_topic: str) -> bool:
             return False
 
         topic_id = str(res.data[0]["topic_id"])
-        save_to_scraped_cache(original_topic)
         print(f"✅ Yeni US başlık veritabanına yazıldı: #{unique_topic} (topic_id: {topic_id})")
 
         print(f"\n🤖 #{unique_topic} için EN entry botları başlatılıyor...")
@@ -186,35 +193,47 @@ def save_and_run(original_topic: str, unique_topic: str) -> bool:
         return False
 
 if __name__ == "__main__":
-    print(f"🔍 [{TODAY_STR}] İngilizce başlık adayları taranıyor...")
-    raw_topics = generate_candidate_topics()
+    print(f"🔍 [{TODAY_STR}] Güncel trendler ve dinamik İngilizce başlıklar taranıyor...")
 
-    if not raw_topics:
-        print("İncelenecek başlık bulunamadı.")
-        sys.exit(0)
+    history_topics = load_history_cache()
+    db_topics = get_all_db_topics()
+    all_seen_topics = history_topics | db_topics
 
-    cache_data = load_scraped_cache()
-    cached_topics = set(cache_data.get("topics", []))
-    db_topics = get_today_topics_from_db()
-    all_seen_topics = cached_topics | db_topics
+    found_unique_topic = None
+    max_retries = 5
 
-    processed = False
+    for attempt in range(1, max_retries + 1):
+        print(f"🔄 Deneme {attempt}/{max_retries}: Taze başlık adayları üretiliyor...")
+        candidates = generate_candidate_topics(list(all_seen_topics))
 
-    for topic in raw_topics:
-        norm_key = normalize_text(topic)
-        if norm_key in all_seen_topics:
-            continue
+        for candidate in candidates:
+            norm_cand = normalize_text(candidate)
+            if norm_cand in all_seen_topics:
+                continue
 
-        print(f"\n📌 Yeni taze başlık adayı yakalandı: {topic}")
-        unique_topic = get_unique_topic_from_ai(topic)
+            formatted = format_title_with_ai(candidate)
+            norm_formatted = normalize_text(formatted)
 
-        if normalize_text(unique_topic) in all_seen_topics:
-            save_to_scraped_cache(topic)
-            continue
+            if norm_formatted in all_seen_topics:
+                all_seen_topics.add(norm_formatted)
+                continue
 
-        if save_and_run(topic, unique_topic):
-            processed = True
+            # Tamamen benzersiz taze başlık yakalandı
+            found_unique_topic = formatted
+            all_seen_topics.add(norm_cand)
+            all_seen_topics.add(norm_formatted)
+            save_to_history_cache([norm_cand, norm_formatted])
             break
 
-    if not processed:
-        print("\nℹ️ Üretilen tüm güncel başlıklar bugün zaten işlenmiş ve önbelleğe alınmış.")
+        if found_unique_topic:
+            break
+
+    if not found_unique_topic:
+        print("❌ Benzersiz ve yeni bir başlık üretilemedi. Daha sonra tekrar deneyin.")
+        sys.exit(1)
+
+    print(f"\n📌 İşlenecek Taze Başlık Seçildi: #{found_unique_topic}")
+    success = save_and_run(found_unique_topic)
+
+    if not success:
+        print("⚠️ Başlık kaydedilemedi veya bot koşumu başarısız oldu.")
