@@ -49,6 +49,10 @@ DB_PAGE_SIZE = 1000
 # --------------------------------------------------------------------------
 # Model Listeleri
 # --------------------------------------------------------------------------
+# NOT: llama-3.3-70b-versatile ve llama-3.1-8b-instant Groq tarafından
+# 16 Ağustos 2026'da decommission edildi (404 model_not_found). mixtral-8x7b-32768
+# de çok daha önce kaldırılmıştı. Bunların yerine Groq'un güncel, aktif
+# production modelleri kullanılıyor.
 
 GEMINI_MODELS = [
     "gemini-2.5-flash",
@@ -58,10 +62,10 @@ GEMINI_MODELS = [
 ]
 
 GROQ_FALLBACK_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "llama-3.1-70b-versatile",  # bazı hesaplarda hâlâ aktif olabilir, zararsız fallback
     "gemma2-9b-it",
-    "mixtral-8x7b-32768",
 ]
 
 DYNAMIC_THEMES = [
@@ -364,12 +368,12 @@ def save_and_run(unique_topic: str) -> bool:
 
 def main() -> None:
     print(f"🔍 [{TODAY_STR}] Güncel trendler taranıyor...")
-    
+
     providers = []
     if GEMINI_API_KEY: providers.append("Google Gemini")
     if GROQ_API_KEY: providers.append("Groq")
     if OPENAI_API_KEY: providers.append("OpenAI")
-    
+
     print(f"ℹ️ Tanımlı AI Sağlayıcıları: {', '.join(providers) if providers else 'YOK'}")
 
     if not providers:
@@ -392,7 +396,7 @@ def main() -> None:
 
         temperature = min(0.6 + attempt * 0.05, 1.0)
         print(f"🔄 Deneme {attempt}/{max_retries}: '{theme}' teması işleniyor (t={temperature:.2f})...")
-        
+
         candidates = generate_candidate_topics(list(all_seen_topics), theme, temperature)
 
         if not candidates:
