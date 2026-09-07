@@ -1,6 +1,5 @@
 """
 US güncel konu başlığı üretici — Multi-Provider (Gemini + Groq + OpenAI) Failover Engine.
-Groq modelleri çökerse otomatik olarak Google Gemini'ye, o da olmazsa OpenAI'a geçer.
 """
 
 import os
@@ -20,10 +19,11 @@ from typing import Iterable, List, Optional
 from groq import Groq
 from supabase import create_client, Client
 
-print("🚀 ÇOKLU SAĞLAYICI MOTORU BAŞLATILDI (Gemini / Groq / OpenAI Fallback)")
+# Doğrulama logu: Actions çıktısında bu satırı görmelisin!
+print("🚀 [AKTIF SURUM] Coklu AI Motoru Calisiyor (Gemini / Groq / OpenAI)...")
 
 # --------------------------------------------------------------------------
-# Ortam değişkenleri & İstemciler
+# Ortam Değişkenleri & İstemciler
 # --------------------------------------------------------------------------
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
@@ -82,11 +82,10 @@ _SMALL_WORDS = {
 }
 
 # --------------------------------------------------------------------------
-# Multi-Provider AI Çağrı Fonksiyonları
+# Multi-Provider LLM Çağrıları
 # --------------------------------------------------------------------------
 
 def call_gemini_api(model: str, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[str]:
-    """Gemini REST API'sini doğrudan HTTP ile çağırır (Ek kütüphane gerektirmez)."""
     if not GEMINI_API_KEY:
         return None
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
@@ -102,7 +101,7 @@ def call_gemini_api(model: str, system_prompt: str, user_prompt: str, temperatur
         method="POST"
     )
     try:
-        with urllib.request.urlopen(req, timeout=25) as response:
+        with urllib.request.urlopen(req, timeout=20) as response:
             res_data = json.loads(response.read().decode("utf-8"))
             return res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
@@ -111,7 +110,6 @@ def call_gemini_api(model: str, system_prompt: str, user_prompt: str, temperatur
 
 
 def call_groq_api(model: str, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[str]:
-    """Groq API üzerinden çağrı yapar."""
     if not groq_client:
         return None
     try:
@@ -130,7 +128,6 @@ def call_groq_api(model: str, system_prompt: str, user_prompt: str, temperature:
 
 
 def call_openai_api(system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[str]:
-    """OpenAI API üzerinden çağrı yapar (opsiyonel son çare)."""
     if not OPENAI_API_KEY:
         return None
     url = "https://api.openai.com/v1/chat/completions"
@@ -152,7 +149,7 @@ def call_openai_api(system_prompt: str, user_prompt: str, temperature: float = 0
         method="POST"
     )
     try:
-        with urllib.request.urlopen(req, timeout=25) as response:
+        with urllib.request.urlopen(req, timeout=20) as response:
             res_data = json.loads(response.read().decode("utf-8"))
             return res_data["choices"][0]["message"]["content"].strip()
     except Exception as e:
@@ -161,22 +158,18 @@ def call_openai_api(system_prompt: str, user_prompt: str, temperature: float = 0
 
 
 def execute_llm_chain(system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[str]:
-    """Sırasıyla Gemini, Groq ve OpenAI'ı dener; ilk başarılı olanın sonucunu döner."""
-    # 1. Aşama: Google Gemini Modelleri
     if GEMINI_API_KEY:
         for model in GEMINI_MODELS:
             res = call_gemini_api(model, system_prompt, user_prompt, temperature)
             if res:
                 return res
 
-    # 2. Aşama: Groq Modelleri
     if GROQ_API_KEY:
         for model in GROQ_FALLBACK_MODELS:
             res = call_groq_api(model, system_prompt, user_prompt, temperature)
             if res:
                 return res
 
-    # 3. Aşama: OpenAI
     if OPENAI_API_KEY:
         res = call_openai_api(system_prompt, user_prompt, temperature)
         if res:
@@ -185,7 +178,7 @@ def execute_llm_chain(system_prompt: str, user_prompt: str, temperature: float =
     return None
 
 # --------------------------------------------------------------------------
-# Metin Temizleme ve Benzerlik Kontrolleri
+# Yardımcı Metin İşleme
 # --------------------------------------------------------------------------
 
 def normalize_text(text: str) -> str:
@@ -273,9 +266,6 @@ def get_all_db_topics() -> set:
         print(f"⚠️ DB kontrol hatası: {e}")
     return db_topics
 
-# --------------------------------------------------------------------------
-# Aday Başlık Üretimi & Formatlama
-# --------------------------------------------------------------------------
 
 def generate_candidate_topics(excluded_samples: list, theme: str, temperature: float = 0.9) -> list:
     recent = excluded_samples[-40:]
@@ -375,15 +365,14 @@ def save_and_run(unique_topic: str) -> bool:
 def main() -> None:
     print(f"🔍 [{TODAY_STR}] Güncel trendler taranıyor...")
     
-    # Hangi anahtarların mevcut olduğunu kontrol et
-    available_providers = []
-    if GEMINI_API_KEY: available_providers.append("Google Gemini")
-    if GROQ_API_KEY: available_providers.append("Groq")
-    if OPENAI_API_KEY: available_providers.append("OpenAI")
+    providers = []
+    if GEMINI_API_KEY: providers.append("Google Gemini")
+    if GROQ_API_KEY: providers.append("Groq")
+    if OPENAI_API_KEY: providers.append("OpenAI")
     
-    print(f"ℹ️ Aktif AI Sağlayıcıları: {', '.join(available_providers) if available_providers else 'Hiçbiri bulunamadı!'}")
+    print(f"ℹ️ Tanımlı AI Sağlayıcıları: {', '.join(providers) if providers else 'YOK'}")
 
-    if not available_providers:
+    if not providers:
         print("❌ HATA: GEMINI_API_KEY veya GROQ_API_KEY ortam değişkeni tanımlı değil!")
         sys.exit(1)
 
@@ -407,7 +396,7 @@ def main() -> None:
         candidates = generate_candidate_topics(list(all_seen_topics), theme, temperature)
 
         if not candidates:
-            print("  ↳ Hiçbir AI sağlayıcısı aday üretemedi, sonraki denemeye geçiliyor.")
+            print("  ↳ Sağlayıcı aday üretemedi, sonraki denemeye geçiliyor.")
             continue
 
         for candidate in candidates:
